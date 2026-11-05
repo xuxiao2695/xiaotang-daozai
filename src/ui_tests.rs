@@ -4195,26 +4195,39 @@ fn bluetooth_switch_clears_notices_and_restarts_with_fresh_baseline(){
 #[test]
 #[ignore = "按需导出小工具页预览（含界面放大）"]
 fn tools_page_gallery(){
-    use crate::tools::{Info,Status};
+    use crate::tools::{Info,Status,SPECS};
+    use crate::autoboost::{BoostState,Mode};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_TOOLS_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
-    let scenes=[
-        ("running",vec![
-            Info{status:Status::Running,exe:Some("C:/Users/me/AutoBrightness/AutoBrightness.exe".into()),lines:crate::tools::describe("autobrightness",&serde_json::Value::Null)},
-            Info{status:Status::Stopped,exe:Some("C:/Users/me/VoiceInput/VoiceInput.exe".into()),lines:crate::tools::describe("voiceinput",&serde_json::Value::Null)}]),
-        ("missing",vec![
-            Info{status:Status::Running,exe:Some("C:/Users/me/AutoBrightness/AutoBrightness.exe".into()),lines:crate::tools::describe("autobrightness",&serde_json::json!({"AwayEnabled":false}))},
-            crate::tools::probe(&crate::tools::SPECS[1],None,std::path::Path::new("/nonexistent"),|_|false)]),
+    let info=|i:usize,status:Status,config:serde_json::Value|Info{status,exe:Some(format!("C:/Users/me/{}/{}",SPECS[i].folder,SPECS[i].exe).into()),lines:crate::tools::describe(SPECS[i].id,&config)};
+    let missing=|i:usize|crate::tools::probe(&SPECS[i],None,std::path::Path::new("/nonexistent"),|_|false);
+    let now=chrono::Utc::now().timestamp();
+    type Setup=Box<dyn Fn(&mut App)>;
+    let scenes:Vec<(&str,Vec<Info>,Setup)>=vec![
+        ("live",vec![info(0,Status::Running,serde_json::Value::Null),info(1,Status::Running,serde_json::Value::Null),info(2,Status::Running,serde_json::Value::Null),info(3,Status::Running,serde_json::Value::Null)],Box::new(move|app|{
+            app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"status","auto":true,"brightness":45,"presence":"present","next_measure_s":120}"#));
+            app.integration_event(tool_event(r#"{"source":"deskhub","kind":"status","meeting":false,"focus_ends_at":null,"speak":true,"claude":[{"session":"s1","title":"xiaotang-daozai","state":"approval"}]}"#));
+            app.autoboost.set(Some("/tmp".into()),Some(BoostState{mode:Mode::Boost,reason:"cl.exe 占用 3.2 核".into(),since:Some(now-300),paused:false,force_until:None}),true);
+        })),
+        ("mixed",vec![info(0,Status::Stopped,serde_json::json!({"AutoEnabled":false})),info(1,Status::Running,serde_json::Value::Null),info(2,Status::Running,serde_json::Value::Null),info(3,Status::Running,serde_json::Value::Null)],Box::new(move|app|{
+            app.integration_event(voice_event("listening",r#","mode":"dictate","mic":"C925e""#));
+            app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":true,"minutes":18}"#));
+            app.autoboost.set(Some("/tmp".into()),Some(BoostState{mode:Mode::Boost,reason:"强制睿频".into(),since:Some(now-60),paused:false,force_until:Some(now+3000)}),true);
+        })),
+        ("eco",vec![info(0,Status::Running,serde_json::Value::Null),info(1,Status::Stopped,serde_json::Value::Null),info(2,Status::Stopped,serde_json::json!({"Speak":false})),info(3,Status::Running,serde_json::Value::Null)],Box::new(move|app|{
+            app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"status","auto":true,"brightness":30,"presence":"away"}"#));
+            app.autoboost.set(Some("/tmp".into()),Some(BoostState{mode:Mode::Eco,reason:"空闲 30 秒".into(),since:Some(now-1800),paused:false,force_until:None}),true);
+        })),
+        ("missing",vec![info(0,Status::Running,serde_json::json!({"AwayEnabled":false})),missing(1),missing(2),missing(3)],Box::new(|_|{})),
     ];
-    for (name,infos) in scenes {for zoom in [1.0f32,1.5] {
+    for (name,infos,setup) in scenes {for zoom in [1.0f32,1.5] {
         let mut h=H::new();h.app.shelf.items.clear();
         let ppp=2.0*zoom;let (w,hgt)=((WIN_W*ppp) as usize,(WIN_H*ppp) as usize);
         let mut raster=crate::preview_raster::Raster::new(w,hgt);
         let mut rgba=Vec::new();
         for frame in 0..90 {
             let t=frame as f64/60.0;
-            if frame==0 {h.app.show_page(crate::app::TOOLS_PAGE);}
-            h.app.tools.set(infos.clone(),t);
+            if frame==0 {h.app.show_page(crate::app::TOOLS_PAGE);h.app.tools.set(infos.clone(),t);setup(&mut h.app);h.app.notice=None;h.app.alerts.clear();}
             let env=Env{t,clock:"09:41:00".into(),today:"2026-11-05".into(),date:"11月5日 周四".into(),cursor:Some(H::local(300.0,60.0)),..Default::default()};
             let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H))),time:Some(t),
                 viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
@@ -4343,6 +4356,13 @@ fn integration_gallery(){
         ("reminder",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"reminder","type":"sit","title":"久坐提醒","body":"已经坐了 50 分钟，起来活动一下"}"#));}})),
         ("away",90,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"away","state":"countdown","seconds":10}"#));}})),
         ("focus-ended",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":false,"missed":3}"#));}})),
+        ("boost-on",60,Box::new(|app,f|{if f==0{app.autoboost.set(None,boost(crate::autoboost::Mode::Eco,""),true);}if f==1{app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"cl.exe 占用 3.2 核"),true);}})),
+        ("boost-off",60,Box::new(|app,f|{if f==0{app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"x"),true);}if f==1{app.autoboost.set(None,boost(crate::autoboost::Mode::Eco,"空闲"),true);}})),
+        // 收起的常驻栏：小工具指示。
+        ("bar-claude-meeting",120,Box::new(|app,f|{if f==0{app.settings.show_battery=true;app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"daozai","state":"approval"}"#));app.integration_event(tool_event(r#"{"source":"deskhub","kind":"meeting","active":true}"#));}if f==1{app.notice=None;app.alerts.clear();}})),
+        ("bar-claude-two",120,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"daozai","state":"waiting"}"#));app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s2","title":"deskhub","state":"waiting"}"#));}if f==1{app.notice=None;app.alerts.clear();}})),
+        ("bar-focus-boost",120,Box::new(|app,f|{if f==0{app.pomo.running=true;app.pomo.remaining=1283.0;app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"编译"),true);app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":true,"minutes":18}"#));}if f==1{app.notice=None;app.alerts.clear();}})),
+        ("bar-boost",120,Box::new(|app,f|{if f==0{app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"游戏"),true);}if f==1{app.notice=None;app.alerts.clear();}})),
     ];
     for (name,frames,script) in scenes {
         let mut h=H::new();h.app.shelf.items.clear();
@@ -4365,4 +4385,151 @@ fn integration_gallery(){
         let crop:Vec<u8>=(0..rows).flat_map(|y|rgba[(y*w+x0)*4..(y*w+x1)*4].to_vec()).collect();
         image::save_buffer(dest.join(format!("{name}.png")),&crop,(x1-x0) as u32,rows as u32,image::ColorType::Rgba8).unwrap();
     }
+    // 设置 → 常驻排列：小工具组的示例图标。
+    for (name,live) in [("settings-resident",false),("settings-resident-live",true)] {
+        let mut h=H::new();h.quota_accounts(2);
+        if live {h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":true,"minutes":18}"#));h.app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"编译"),true);}
+        let (w,hgt)=(1000usize,360usize);let mut raster=crate::preview_raster::Raster::new(w,hgt);let mut rgba=Vec::new();
+        for frame in 0..3 {
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(500.0,180.0))),time:Some(frame as f64/60.0),
+                viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{h.app.resident_order_settings(ui);});});
+            raster.update_textures(&output.textures_delta);
+            if frame==2 {raster.buf.fill([0.1,0.1,0.1,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);raster.to_rgba8(&mut rgba);}
+            raster.free_textures(&output.textures_delta);
+        }
+        image::save_buffer(dest.join(format!("{name}.png")),&rgba,w as u32,hgt as u32,image::ColorType::Rgba8).unwrap();
+    }
+}
+
+#[test]
+fn resident_settings_preview_the_tools_group_and_drag_it(){
+    use crate::bar_layout::{CLOCK,TOOLS};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(5);
+    fn draw(h:&mut H,events:Vec<egui::Event>)->[Pos2;2]{
+        let mut points=[Pos2::ZERO;2];
+        h.t+=0.02;
+        let out=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(600.0,300.0))),time:Some(h.t),events,..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{h.app.resident_order_settings(ui);for (index,slot) in [TOOLS,CLOCK].into_iter().enumerate(){points[index]=ui.ctx().read_response(ui.id().with(("resident-icon",slot))).expect("小工具组也要能拖").rect.center();}});});
+        h.shapes=out.shapes;points
+    }
+    draw(&mut h,vec![]);let [from,to]=draw(&mut h,vec![]);
+    assert!(from.x>to.x,"默认排在最后");
+    let button=|pos,pressed|egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+    draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
+    draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
+    draw(&mut h,vec![egui::Event::PointerMoved(to)]);
+    for _ in 0..3{draw(&mut h,vec![]);}
+    draw(&mut h,vec![button(to,false)]);
+    let order=h.app.settings.resident_order.clone();
+    assert!(crate::bar_layout::valid_order(&order) && order.iter().position(|s|*s==TOOLS)<order.iter().position(|s|*s==CLOCK),"小工具移到时间前面：{order:?}");
+    // 真实的指示出现时预览里画真实的。
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"meeting","active":true}"#));
+    draw(&mut h,vec![]);draw(&mut h,vec![]);
+}
+
+fn boost(mode:crate::autoboost::Mode,reason:&str)->Option<crate::autoboost::BoostState>{
+    Some(crate::autoboost::BoostState{mode,reason:reason.into(),since:None,paused:false,force_until:None})
+}
+
+#[test]
+fn autoboost_switches_show_a_hud_and_a_resident_bolt(){
+    use crate::{autoboost::Mode,integration_ui::ToolNotice,integrations::Indicator,bar_layout::TOOLS};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    h.app.autoboost.set(None,boost(Mode::Boost,"刚启动"),true);h.frame(vec![]);
+    assert!(h.app.notice.is_none(),"第一次读到状态不提示");
+    h.app.autoboost.set(None,boost(Mode::Eco,"空闲 30 秒"),true);h.frame(vec![]);
+    assert_eq!(h.app.notice.as_ref().map(|a|(a.body.as_str(),a.is_hud())),Some(("已回到省电",true)));
+    for _ in 0..200 {h.frame(vec![]);}
+    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty());
+    assert!(h.app.resident.target.x[TOOLS].is_none(),"没有指示时不占位");
+    h.app.autoboost.set(None,boost(Mode::Boost,"cl.exe 占用 3.2 核"),true);for _ in 0..20 {h.frame(vec![]);}
+    let a=h.app.notice.clone().unwrap();
+    assert_eq!((a.tool,a.body.as_str()),(Some(ToolNotice::Boost(true)),"已开启睿频 · cl.exe 占用 3.2 核"));
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="已开启睿频")));
+    assert!((h.app.current_width()-(crate::integration_ui::boost_width(&a.body)+h.app.pet_space())).abs()<2.0);
+    for _ in 0..200 {h.frame(vec![]);}
+    assert_eq!(h.app.resident_indicators(),vec![Indicator::Boost{reason:"cl.exe 占用 3.2 核".into()}]);
+    assert!(h.app.resident.target.x[TOOLS].is_some() && h.app.resident.target.x[TOOLS+1].is_none(),"常驻一个小闪电");
+    // 主脚本退出：指示消失，也不弹「回到省电」。
+    h.app.autoboost.set(None,boost(Mode::Boost,"x"),false);h.frame(vec![]);
+    assert!(h.app.resident_indicators().is_empty() && h.app.notice.is_none());
+    // 关闭「睿频提示」后静默。
+    h.app.autoboost.set(None,boost(Mode::Eco,""),true);h.frame(vec![]);h.app.settings.tool_boost=false;
+    h.app.autoboost.set(None,boost(Mode::Boost,"游戏"),true);h.frame(vec![]);
+    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty());
+}
+
+#[test]
+fn resident_indicators_follow_priority_and_open_the_tools_page(){
+    use crate::{integrations::Indicator,bar_layout::TOOLS};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    h.app.autoboost.set(None,boost(crate::autoboost::Mode::Boost,"编译"),true);
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":true,"minutes":25}"#));
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"meeting","active":true}"#));
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"daozai","state":"waiting"}"#));
+    h.app.notice=None;h.app.alerts.clear();
+    for _ in 0..120 {h.frame(vec![]);}
+    let shown=h.app.shown_indicators();
+    assert!(matches!(shown.as_slice(),[Indicator::Claude{count:1,..},Indicator::Meeting]),"最多两个，按优先级：{shown:?}");
+    let layout=h.app.resident.current();
+    assert!(layout.width<=PW && layout.x[TOOLS].is_some() && layout.x[TOOLS+1].is_some());
+    assert!(h.animating,"Claude 等待时小点呼吸");
+    h.click(Pos2::new(WIN_W/2.0+layout.x[TOOLS+1].unwrap(),15.0));
+    for _ in 0..30 {h.frame(vec![]);}
+    assert_eq!(h.app.page(),crate::app::TOOLS_PAGE,"点指示打开小工具页");
+    // 会议结束、Claude 回到工作：剩下专注与睿频。
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"meeting","active":false}"#));
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"daozai","state":"working"}"#));
+    assert!(matches!(h.app.shown_indicators().as_slice(),[Indicator::Focus{..},Indicator::Boost{..}]));
+    assert_eq!(crate::integration_ui::indicator_tip(&h.app.shown_indicators()[0],chrono::Utc::now().timestamp()),"专注中 · 还剩 25 分钟");
+}
+
+#[test]
+fn tools_page_cards_show_live_state_and_run_their_actions(){
+    use crate::tools::{Info,Status,SPECS};
+    use crate::app::Cmd;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    let folder=std::env::temp_dir().join(format!("daozai-tools-page-{}",std::process::id()));let _=std::fs::remove_dir_all(&folder);std::fs::create_dir_all(&folder).unwrap();
+    let info=|i:usize,status:Status|Info{status,exe:Some(format!("C:/Users/me/{}/{}",SPECS[i].folder,SPECS[i].exe).into()),lines:crate::tools::describe(SPECS[i].id,&serde_json::Value::Null)};
+    h.app.tools.set(vec![info(0,Status::Stopped),info(1,Status::Stopped),info(2,Status::Stopped),info(3,Status::Stopped)],0.0);
+    h.app.autoboost.set(Some(folder.clone()),boost(crate::autoboost::Mode::Eco,"空闲"),false);
+    let text=|h:&H,label:&str|h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()==label));
+    h.app.show_page(crate::app::TOOLS_PAGE);h.hover(H::local(210.0,80.0),1.0);
+    for label in ["自动亮度","语音输入","DeskHub","自动睿频","主脚本没在运行","每 5 分钟测一次光","语音播报 开 · 岛仔联动 开"] {assert!(text(&h,label),"缺少 {label}");}
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with("按住 F13 听写"))),"没有实时数据时用 config.json");
+    h.click_text("启动");
+    assert!(h.cmds.iter().any(|c|matches!(c,Cmd::Open(_))),"按钮从左上开始，第一个是自动亮度");
+    // 推来的事件让卡片显示实时状态，并视为在运行。
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"status","auto":true,"brightness":45,"presence":"present","next_measure_s":120}"#));
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"status","meeting":false,"focus_ends_at":null,"speak":true,"claude":[{"session":"s1","title":"xiaotang-daozai","state":"approval"}]}"#));
+    h.app.notice=None;h.app.alerts.clear();
+    h.app.autoboost.set(Some(folder.clone()),boost(crate::autoboost::Mode::Eco,"空闲"),true);
+    h.hover(H::local(210.0,80.0),0.3);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with("Claude 等你批准"))));
+    for label in ["亮度 45% · 2 分钟后测光","清除提醒","睿频 1 小时","打开"] {assert!(text(&h,label),"缺少 {label}");}
+    h.cmds.clear();h.click_text("清除提醒");
+    assert!(h.cmds.contains(&Cmd::DeskHub("/clear".into())));
+    h.click_text("睿频 1 小时");
+    let control:serde_json::Value=serde_json::from_str(&std::fs::read_to_string(folder.join("control.json")).unwrap()).unwrap();
+    assert_eq!(control["Paused"],false);
+    let until=crate::integrations::iso(control["ForceUntil"].as_str().unwrap()).unwrap();
+    assert!((until-chrono::Utc::now().timestamp()-3600).abs()<5);
+    h.hover(H::local(210.0,80.0),0.1);
+    assert!(text(&h,"取消强制")&&h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with("强制睿频到"))));
+    h.click_text("取消强制");
+    assert_eq!(std::fs::read_to_string(folder.join("control.json")).unwrap(),crate::autoboost::control_json(false,None));
+    // 专注中：DeskHub 的按钮变成结束专注；主脚本没运行时 AutoBoost 走计划任务启动。
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"xiaotang-daozai","state":"working"}"#));
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":true,"minutes":25}"#));
+    h.app.autoboost.set(Some(folder.clone()),None,false);
+    h.app.notice=None;h.app.alerts.clear();h.hover(H::local(210.0,80.0),0.1);
+    assert!(text(&h,"专注中 · 还剩 25 分钟"));
+    h.cmds.clear();h.click_text("结束专注");
+    assert!(h.cmds.contains(&Cmd::DeskHub("/focus?minutes=0".into())));
+    let start=h.shapes.iter().filter_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()=="启动"=>Some(t.visual_bounding_rect().center()),_=>None}).max_by(|a,b|a.y.total_cmp(&b.y)).unwrap();
+    h.click(start);
+    assert!(h.cmds.contains(&Cmd::RunHidden("schtasks".into(),vec!["/Run".into(),"/TN".into(),"AutoBoost".into()])));
+    // 卡片都在页标题和翻页箭头之间。
+    let (x,y,w,hh)=crate::tools::GRID;assert!(x>=40.0 && x+2.0*w+7.0<=379.0 && y>=33.0 && y+2.0*hh+5.0<=128.0);
+    let _=std::fs::remove_dir_all(folder);
 }

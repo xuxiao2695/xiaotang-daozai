@@ -4,6 +4,8 @@
 //! 其它通知排到它后面；结束后队列照常继续。
 use crate::anim::{self, smoothstep};
 use crate::app::{App, HUD_TRACK_W, HUD_TRACK_X, HUD_W};
+use crate::autoboost::Mode;
+use crate::bar_layout as bar;
 use crate::extras::{Alert, AlertSource};
 use crate::integrations::{Event, Indicator, Show, VoicePhase};
 use crate::paint::{self, Card, H};
@@ -20,13 +22,17 @@ pub(crate) enum ToolNotice {
     Claude { session: String, approval: bool },
     ClaudeDone(String),
     FocusEnded,
+    /// AutoBoost 切换：true = 开启睿频，false = 回到省电。
+    Boost(bool),
 }
 impl ToolNotice {
-    pub(crate) fn is_hud(&self) -> bool { matches!(self, Self::Voice | Self::Brightness) }
+    pub(crate) fn is_hud(&self) -> bool { matches!(self, Self::Voice | Self::Brightness | Self::Boost(_)) }
 }
 
 pub(crate) const VOICE_TITLE: &str = "语音输入";
 const BRIGHTNESS_TITLE: &str = "屏幕亮度";
+const BOOST_TITLE: &str = "睿频";
+const ORANGE: Color32 = Color32::from_rgb(255, 140, 40);
 const MIC_RED: Color32 = Color32::from_rgb(255, 69, 58);
 const AMBER: Color32 = Color32::from_rgb(255, 176, 46);
 const PURPLE: Color32 = Color32::from_rgb(168, 124, 255);
@@ -36,6 +42,9 @@ const VOICE_MAX_W: f32 = 340.0;
 
 /// 估算文字宽度（布局时还拿不到字体）：汉字按一个字号，ASCII 约半个。
 fn approx_w(text: &str, size: f32) -> f32 { text.chars().map(|c| if c.is_ascii() { 0.56 } else { 1.0 }).sum::<f32>() * size }
+
+/// 睿频 HUD 随原因长短伸缩。
+pub(crate) fn boost_width(body: &str) -> f32 { (62.0 + approx_w(body, 11.0)).clamp(196.0, VOICE_MAX_W) }
 
 fn listening_label(command: bool) -> &'static str { if command { "说出命令" } else { "正在听" } }
 
@@ -57,9 +66,53 @@ impl App {
     }
 
     /// 常驻指示（按优先级，最多由常驻栏取前两个）。
-    #[allow(dead_code)]
     pub(crate) fn resident_indicators(&self) -> Vec<Indicator> {
         self.integrations.indicators(chrono::Utc::now().timestamp(), self.settings.tool_claude, self.settings.tool_boost)
+    }
+    /// 常驻栏上实际要排布的指示（最多两个）。
+    pub(crate) fn shown_indicators(&self) -> Vec<Indicator> {
+        let mut list = self.resident_indicators();
+        list.truncate(crate::bar_layout::TOOL_SLOTS);
+        list
+    }
+    /// Claude 等待时琥珀色小点呼吸，需要持续重绘。
+    pub(crate) fn indicators_animate(&self) -> bool {
+        bar::animations_enabled() && self.shown_indicators().iter().any(|i| matches!(i, Indicator::Claude { .. }))
+    }
+
+    /// 收起的常驻栏上画小工具指示；点一下打开小工具页。
+    pub(crate) fn draw_tool_indicators(&mut self, c: &Card, cx: f32, layout: &bar::Layout) {
+        let now = chrono::Utc::now().timestamp();
+        let mut open = false;
+        for (i, indicator) in self.shown_indicators().iter().enumerate() {
+            let slot = bar::TOOLS + i;
+            let Some(x) = layout.x[slot] else { continue };
+            let alpha = layout.pet_clearance(slot);
+            let faded = c.faded(alpha);
+            let c = if alpha < 0.8 { faded.ghost() } else { faded };
+            let x = cx + x;
+            indicator_glyph(&c, x, 15.0, indicator, self.t as f32, now);
+            if crate::quota_ui::bar_tooltip(c.hit(x - 11.0, 3.0, 22.0, 25.0, ("tool-indicator", i)), format!("{}\n点击查看小工具", indicator_tip(indicator, now))).clicked() { open = true; }
+        }
+        if open { self.show_page(crate::app::TOOLS_PAGE); }
+    }
+
+    /// 每 2 秒读一次 AutoBoost 状态：切换时弹 HUD，睿频期间交给常驻指示。
+    fn tick_boost(&mut self) {
+        self.autoboost.poll(self.t);
+        let after = self.autoboost.live().map(|b| (b.mode, b.reason.clone()));
+        let before = std::mem::replace(&mut self.autoboost.seen, after.as_ref().map(|(mode, _)| *mode));
+        self.integrations.boost = after.as_ref().filter(|(mode, _)| *mode == Mode::Boost).map(|(_, reason)| reason.clone());
+        let Some((mode, reason)) = after else { return };
+        // 刚启动（或主脚本刚开始运行）时只记下当前模式，不弹提示。
+        if !(self.settings.tool_boost && self.settings.notifications) || before.is_none() || before == Some(mode) { return; }
+        let body = match mode {
+            Mode::Boost => if reason.is_empty() { "已开启睿频".to_string() } else { format!("已开启睿频 · {reason}") },
+            Mode::Eco if before == Some(Mode::Boost) => "已回到省电".into(),
+            _ => return,
+        };
+        self.drop_tool(|t| matches!(t, ToolNotice::Boost(_)));
+        self.tool_alert(ToolNotice::Boost(mode == Mode::Boost), BOOST_TITLE, body, 2.5);
     }
 
     fn tool_alert(&mut self, tool: ToolNotice, title: impl Into<String>, body: impl Into<String>, duration: f64) {
@@ -100,6 +153,8 @@ impl App {
     pub(crate) fn tick_integrations(&mut self) {
         let now = chrono::Utc::now().timestamp();
         for show in self.integrations.tick(self.t, now) { self.integration_show(show); }
+        self.tick_boost();
+        if !self.settings.tool_boost { self.drop_tool(|t| matches!(t, ToolNotice::Boost(_))); }
         if !self.settings.tool_voice { self.integrations.voice = None; }
         if !self.settings.tool_brightness { self.drop_tool(|t| matches!(t, ToolNotice::Brightness | ToolNotice::Reminder(_) | ToolNotice::Away)); }
         if !self.settings.tool_claude { self.drop_tool(|t| matches!(t, ToolNotice::Claude { .. } | ToolNotice::ClaudeDone(_) | ToolNotice::FocusEnded)); }
@@ -150,6 +205,21 @@ impl App {
         match tool {
             ToolNotice::Voice => self.draw_voice(nc),
             ToolNotice::Brightness => self.draw_brightness_hud(nc),
+            ToolNotice::Boost(on) => {
+                let since = (self.t - a.at) as f32;
+                let pop = 1.0 + 0.16 * (1.0 - anim::ease_out_cubic((since / 0.3).clamp(0.0, 1.0)));
+                let ic = nc.scaled(22.0, 19.0, pop);
+                if *on { ic.glow(22.0, 19.0, 16.0, paint::alpha(ORANGE, 0.35)); }
+                ic.circle(22.0, 19.0, 11.0, if *on { ORANGE } else { Color32::from_rgb(52, 168, 83) });
+                crate::tools::bolt(&ic, 22.0, 19.0, 0.82, theme::WHITE);
+                let width = boost_width(&a.body);
+                let (head, tail) = a.body.split_once(" · ").map_or((a.body.as_str(), ""), |(h, t)| (h, t));
+                let w = nc.text(42.0, 23.0, head, 11.0, W::Semibold, theme::WHITE, H::Left);
+                if !tail.is_empty() {
+                    let tail = nc.fit(tail, 10.5, W::Regular, (width - 42.0 - w - 28.0).max(20.0));
+                    nc.text(42.0 + w + 6.0, 23.0, &format!("· {tail}"), 10.5, W::Regular, theme::GRAY, H::Left);
+                }
+            }
             _ => {
                 tool_icon(nc, 22.0, 22.0, tool, self.t - a.at, self.integrations.away.map(|(s, at)| (s, self.t - at)));
                 let (title, body, accent) = match tool {
@@ -366,5 +436,54 @@ pub(crate) fn tool_icon(c: &Card, x: f32, y: f32, tool: &ToolNotice, elapsed: f6
             c.circle(x, y, 13.0, PURPLE);
             paint::stopwatch(&c.scaled(x, y, 0.55), x, y - 1.0, 8.0, 0.0, theme::WHITE);
         }
+        ToolNotice::Boost(on) => { c.circle(x, y, 13.0, if *on { ORANGE } else { theme::GREEN }); crate::tools::bolt(c, x, y, 0.9, theme::WHITE); }
+    }
+}
+
+/// 常驻栏上的小工具指示（约 16 px）：Claude 等待 = 呼吸的琥珀色星芒，会议 = 红点，
+/// 专注 = 紫色圆环 + 剩余分钟，睿频 = 橙色小闪电。
+pub(crate) fn indicator_glyph(c: &Card, x: f32, y: f32, indicator: &Indicator, t: f32, now: i64) {
+    match indicator {
+        Indicator::Claude { count, approval, .. } => {
+            let pulse = 0.5 + 0.5 * (t * 3.0).sin();
+            c.glow(x, y, 9.0 + 3.0 * pulse, paint::alpha(AMBER, 0.20 + 0.25 * pulse));
+            claude_mark(&c.scaled(x, y, 0.92 + 0.08 * pulse), x, y, 6.6, AMBER);
+            c.circle(x, y, 1.6, AMBER);
+            if *approval { c.circle(x + 6.0, y - 5.5, 2.4, theme::WHITE); c.circle(x + 6.0, y - 5.5, 1.5, MIC_RED); }
+            if *count > 1 {
+                c.circle(x + 6.5, y + 6.0, 4.2, Color32::from_gray(232));
+                c.centered_text(x + 6.5, y + 6.0, &count.min(&9).to_string(), 6.5, W::Bold, Color32::BLACK, H::Center);
+            }
+        }
+        Indicator::Meeting => {
+            c.glow(x, y, 9.0, paint::alpha(MIC_RED, 0.30));
+            c.circle(x, y, 4.6, MIC_RED);
+            c.ring(x, y, 7.2, 1.3, paint::alpha(MIC_RED, 0.45));
+        }
+        Indicator::Focus { ends_at } => {
+            let minutes = ((ends_at - now).max(0) + 59) / 60;
+            c.circle(x, y, 8.0, Color32::from_rgb(38, 28, 58));
+            c.ring(x, y, 7.2, 1.6, paint::alpha(PURPLE, 0.35));
+            // 最后 25 分钟按比例走圈，更长的专注先保持满圈。
+            let k = (minutes as f32 / 25.0).clamp(0.04, 1.0);
+            c.arc(x, y, 7.2, -PI / 2.0, -PI / 2.0 + TAU * k, 1.6, PURPLE);
+            let text = if minutes > 99 { "99+".to_string() } else { minutes.to_string() };
+            c.centered_text(x, y, &text, if text.len() > 2 { 5.5 } else { 7.5 }, W::Bold, theme::WHITE, H::Center);
+        }
+        Indicator::Boost { .. } => {
+            c.glow(x, y, 9.0, paint::alpha(ORANGE, 0.28));
+            crate::tools::bolt(c, x, y, 0.95, ORANGE);
+        }
+    }
+}
+
+pub(crate) fn indicator_tip(indicator: &Indicator, now: i64) -> String {
+    match indicator {
+        Indicator::Claude { count: 1, title, approval } => format!("{title} · {}", if *approval { "Claude 要你批准" } else { "Claude 在等你回复" }),
+        Indicator::Claude { count, title, .. } => format!("{count} 个 Claude 会话在等你（最早：{title}）"),
+        Indicator::Meeting => "会议中 · DeskHub 已静音提醒".into(),
+        Indicator::Focus { ends_at } => format!("专注中 · 还剩 {} 分钟", ((ends_at - now).max(0) + 59) / 60),
+        Indicator::Boost { reason } if reason.is_empty() => "AutoBoost 睿频中".into(),
+        Indicator::Boost { reason } => format!("AutoBoost 睿频中 · {reason}"),
     }
 }

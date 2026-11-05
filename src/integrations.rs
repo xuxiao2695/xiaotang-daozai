@@ -229,6 +229,29 @@ fn serve(mut stream: TcpStream, gate: &Gate) -> Option<Event> {
     }
 }
 
+// ---------------- 小工具页的操作 ----------------
+
+/// DeskHub 的本机控制口（`POST /focus?minutes=25`、`POST /clear`、`GET /status`）。
+pub const DESKHUB_PORT: u16 = 47800;
+
+/// 不弹窗口地启动一个程序，不等待它结束。
+pub fn run_hidden(program: &str, args: &[String]) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x0800_0000); } // CREATE_NO_WINDOW
+    command.spawn().map(|_| ())
+}
+
+/// 向 DeskHub 发一个控制请求；失败时返回给用户看的提示。
+pub fn deskhub_post(path: &str) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(500)).timeout(Duration::from_millis(1500)).build();
+    match agent.post(&format!("http://127.0.0.1:{DESKHUB_PORT}{path}")).send_string("") {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, _)) => Err(format!("DeskHub 拒绝了这个操作（{code}），请更新 DeskHub")),
+        Err(_) => Err("DeskHub 没有响应，请确认它正在运行".into()),
+    }
+}
+
 // ---------------- 状态模型 ----------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

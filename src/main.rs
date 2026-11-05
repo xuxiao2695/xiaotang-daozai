@@ -61,6 +61,8 @@ struct Shell {
     quota_at: PollClock,
     /// 小工具联动端口；被占用时为 None，岛仔照常运行。
     integrations: Option<daozai::integrations::Server>,
+    /// 小工具页的后台操作（启动 AutoBoost、DeskHub 控制口）失败时把提示送回界面。
+    tool_feedback: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
 }
 
 impl Shell {
@@ -148,6 +150,7 @@ impl Shell {
             cal_sig: (Vec::new(), true),
             quota: daozai::quota::Service::start(), quota_sig: None, quota_at: PollClock::default(),
             integrations,
+            tool_feedback: std::sync::mpsc::channel(),
         }
     }
 
@@ -332,6 +335,7 @@ impl eframe::App for Shell {
             #[cfg(not(windows))] let visible=true;
             server.gate.set(self.app.integration_flags(),visible);
         }
+        while let Ok(message)=self.tool_feedback.1.try_recv(){self.app.say(message);}
         let env = self.env(ctx);
         // v0.5.5 邮件：开关 / 间隔 / 账号清单变了就重新对齐收信线程，再把事件交给界面。
         let sig=(self.app.settings.mail_enabled,self.app.settings.mail_interval,self.app.mail_accounts().to_vec());
@@ -452,6 +456,14 @@ impl eframe::App for Shell {
                     self.cal_sig=(configs,self.app.settings.calendar_auto_sync);
                 },
                 Cmd::Focus => ctx.send_viewport_cmd(egui::ViewportCommand::Focus),
+                Cmd::RunHidden(program,args)=>{
+                    if let Err(e)=daozai::integrations::run_hidden(&program,&args){self.app.say(format!("无法运行 {program}：{e}"));}
+                },
+                Cmd::DeskHub(path)=>{
+                    // 控制口在本机，但仍放到后台线程，DeskHub 卡住时不拖慢界面。
+                    let (tx,ctx)=(self.tool_feedback.0.clone(),ctx.clone());
+                    std::thread::spawn(move||{if let Err(e)=daozai::integrations::deskhub_post(&path){let _=tx.send(e);ctx.request_repaint();}});
+                },
             }
         }
 

@@ -27,6 +27,7 @@ pub mod otp;
 pub mod quota;
 mod quota_ui;
 mod tools;
+mod autoboost;
 pub mod integrations;
 mod integration_ui;
 mod pages;

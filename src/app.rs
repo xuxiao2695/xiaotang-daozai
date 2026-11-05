@@ -140,6 +140,10 @@ pub enum Cmd {
     CalendarMonth(chrono::NaiveDate),
     /// 断开并删除日历配置（凭据由界面删除）。
     CalendarForget,
+    /// 不弹窗口地运行一个程序（如 `schtasks /Run /TN AutoBoost`）。
+    RunHidden(String, Vec<String>),
+    /// POST 到 DeskHub 本机控制口 127.0.0.1:47800（路径含查询串，如 `/focus?minutes=25`）。
+    DeskHub(String),
 }
 
 pub struct FrameOut {
@@ -427,6 +431,8 @@ pub struct App {
     pub(crate) integrations: crate::integrations::State,
     pub integration_status: String,
     pub(crate) voice_level: f32,
+    /// AutoBoost 的 state.json / 运行状态（每 2 秒读一次）。
+    pub(crate) autoboost: crate::autoboost::Watch,
 }
 
 impl App {
@@ -522,7 +528,7 @@ impl App {
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
             resident: Default::default(), resident_power:(None,false),
-            integrations: Default::default(), integration_status: "未启动".into(), voice_level: 0.0,
+            integrations: Default::default(), integration_status: "未启动".into(), voice_level: 0.0, autoboost: Default::default(),
         }
     }
 
@@ -944,7 +950,7 @@ impl App {
 
     pub fn show_page(&mut self,page:usize) {
         if !self.settings.visible_pages[page] {
-            self.settings_tab=[1,2,3,5,4,7,11,8][page];
+            self.settings_tab=[1,2,3,5,4,7,11,8,10].get(page).copied().unwrap_or(10);
             self.open_settings();
             return;
         }
@@ -1092,7 +1098,7 @@ impl App {
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
-        if let Some(tool)=&a.tool {return self.tool_notice_size(tool);}
+        if let Some(tool)=&a.tool {return if matches!(tool,crate::integration_ui::ToolNotice::Boost(_)){(crate::integration_ui::boost_width(&a.body),38.0)}else{self.tool_notice_size(tool)};}
         let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
     }
@@ -1178,7 +1184,7 @@ impl App {
         self.update_media(env,&ctx);
         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
-        let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),0);
+        let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.shown_indicators().len());
         layout.reorder(&self.settings.resident_order);
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
         if self.pet_enabled() {
@@ -1419,7 +1425,8 @@ impl App {
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || !self.open && !minimal_pill && self.notice.is_none() && self.indicators_animate();
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
@@ -1619,6 +1626,7 @@ impl App {
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
         }
+        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);}
     }
 
     fn update_pet(&mut self, env: &Env, cx: f32) {

@@ -9,12 +9,12 @@ pub(crate) const MUSIC: usize = 6;
 pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
-/// 小工具（自动亮度、语音输入）：最多两个小图标，作为一组排布。
+/// 小工具常驻指示（Claude 等待、会议、专注、睿频）：最多两个小图标，作为一组排布。
 pub(crate) const TOOLS: usize = 10;
 pub(crate) const TOOL_SLOTS: usize = 2;
 const SLOTS: usize = 12;
 const TOOL_W: f32 = 16.0;
-const TOOL_STEP: f32 = 23.0;
+pub(crate) const TOOL_STEP: f32 = 23.0;
 const WIDTHS: [f32; SLOTS] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0,TOOL_W,TOOL_W];
 
 pub(crate) const DEFAULT_ORDER: [usize;7]=[BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS,TOOLS];
@@ -51,7 +51,10 @@ pub(crate) struct Layout {
 
 impl Layout {
     /// `tools` 是要常驻的小工具个数；放不下时（总宽会超过展开面板）整组让位。
-    pub fn new(battery:bool,quotas:usize,music:bool,focus:bool,bell:bool,pet:bool,tools:usize)->Self {
+    pub fn new(battery:bool,quotas:usize,music:bool,focus:bool,bell:bool,pet:bool,tools:usize)->Self {Self::build(battery,quotas,music,focus,bell,pet,tools,crate::app::PW)}
+    /// 设置页的排序预览：所有组件都要能拖，不受展开面板宽度限制（预览会整体缩放）。
+    pub fn preview(battery:bool,quotas:usize,music:bool,focus:bool,pet:bool,tools:usize)->Self {Self::build(battery,quotas,music,focus,false,pet,tools,f32::INFINITY)}
+    fn build(battery:bool,quotas:usize,music:bool,focus:bool,bell:bool,pet:bool,tools:usize,limit:f32)->Self {
         fn place(cursor:&mut f32,width:f32)->f32 {let x=*cursor+width/2.0;*cursor+=width+12.0;x}
         let mut x=[None;SLOTS];let mut cursor=16.0;
         let count=quotas.min(3);
@@ -79,7 +82,7 @@ impl Layout {
         if tools>0 {
             let width=TOOL_W+(tools-1) as f32*TOOL_STEP;
             let bell_width=if bell {WIDTHS[BELL]+12.0}else{0.0};
-            if cursor+width+12.0+bell_width-12.0+16.0<=crate::app::PW {
+            if cursor+width+12.0+bell_width-12.0+16.0<=limit {
                 let left=place(&mut cursor,width)-width/2.0;
                 for i in 0..tools {x[TOOLS+i]=Some(left+TOOL_W/2.0+i as f32*TOOL_STEP);}
             }
@@ -201,6 +204,14 @@ mod tests {
             assert_eq!(layout.clearance(CLOCK),1.0);
             if tools>0 && quotas<=2 {assert!(layout.x[TOOLS].is_some(),"空间够时小工具应常驻：{layout:?}");}
         }}}}}}}
+    }
+    #[test]
+    fn preview_always_keeps_tools_draggable(){
+        for quotas in 0..=8 {
+            let layout=Layout::preview(true,quotas.max(1),true,true,true,TOOL_SLOTS);
+            assert!(layout.x[TOOLS].is_some()&&layout.x[TOOLS+1].is_some());
+            assert_eq!(layout.x[TOOLS+1].unwrap()-layout.x[TOOLS].unwrap(),TOOL_STEP);
+        }
     }
     #[test]
     fn replacing_battery_moves_continuously_and_supports_an_instant_state(){
