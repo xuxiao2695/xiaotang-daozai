@@ -4314,7 +4314,8 @@ fn tool_notices_follow_claude_and_brightness_events(){
     assert_eq!((a.title.as_str(),a.body.as_str(),a.duration),("xiaotang-daozai","Claude 要你批准",10.0));
     assert!(matches!(h.app.resident_indicators().as_slice(),[crate::integrations::Indicator::Claude{count:1,approval:true,..}]));
     h.app.integration_event(claude("working"));h.frame(vec![]);
-    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty(),"开始工作后撤下等待提醒");
+    assert!(h.app.notice.is_none(),"开始工作后撤下等待提醒");
+    assert!(matches!(h.app.resident_indicators().as_slice(),[crate::integrations::Indicator::ClaudeWorking{count:1,..}]),"干活时常驻灰白星芒");
     h.app.integration_event(claude("done"));h.frame(vec![]);
     assert_eq!(notice_tool(&h),Some(ToolNotice::ClaudeDone("s1".into())));
     for _ in 0..30 {h.frame(vec![]);}h.click_text("知道了");assert!(h.app.notice.is_none());
