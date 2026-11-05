@@ -59,6 +59,8 @@ struct Shell {
     quota: daozai::quota::Service,
     quota_sig: Option<(bool,Vec<daozai::quota::Account>)>,
     quota_at: PollClock,
+    /// 小工具联动端口；被占用时为 None，岛仔照常运行。
+    integrations: Option<daozai::integrations::Server>,
 }
 
 impl Shell {
@@ -96,6 +98,12 @@ impl Shell {
         #[cfg(windows)]
         let incoming=if app.settings.read_notifications {match daozai::system::connect(){Ok(rx)=>Some(rx),Err(e)=>{app.listener_status=format!("Windows 无法读取通知：{}",e.code());None}}}else{None};
         // 音频、网络与输入法查询由后台完成，避免首帧等待系统服务。
+        diagnostics::startup("启动小工具联动端口");
+        let integrations={let ctx=cc.egui_ctx.clone();daozai::integrations::Server::start(daozai::integrations::PORT,move||ctx.request_repaint())};
+        let integrations=match integrations {
+            Ok(server)=>{app.integration_status=format!("已就绪 · 127.0.0.1:{}",server.port);Some(server)},
+            Err(error)=>{app.integration_status=daozai::integrations::log_failure(&error);None},
+        };
         diagnostics::startup("创建后台采样与窗口");
         let initial_input=None;
         #[cfg(windows)] let system_state=daozai::system::Snapshot::default();
@@ -139,6 +147,7 @@ impl Shell {
             cal: daozai::calendar::Service::start(),
             cal_sig: (Vec::new(), true),
             quota: daozai::quota::Service::start(), quota_sig: None, quota_at: PollClock::default(),
+            integrations,
         }
     }
 
@@ -316,6 +325,12 @@ impl eframe::App for Shell {
                 self.seek_rx=None;
                 if !success{self.app.say("播放器未完成跳转，请打开客户端后重试");}
             }
+        }
+        if let Some(server)=&self.integrations {
+            while let Some(event)=server.try_recv(){self.app.integration_event(event);}
+            #[cfg(windows)] let visible=!self.hidden;
+            #[cfg(not(windows))] let visible=true;
+            server.gate.set(self.app.integration_flags(),visible);
         }
         let env = self.env(ctx);
         // v0.5.5 邮件：开关 / 间隔 / 账号清单变了就重新对齐收信线程，再把事件交给界面。

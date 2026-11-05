@@ -4227,3 +4227,142 @@ fn tools_page_gallery(){
         image::save_buffer(dest.join(format!("tools-{name}-{}.png",(zoom*100.0) as u32)),&rgba,w as u32,hgt as u32,image::ColorType::Rgba8).unwrap();
     }}
 }
+
+fn voice_event(state:&str,extra:&str)->crate::integrations::Event {
+    crate::integrations::parse(format!(r#"{{"source":"voiceinput","kind":"voice","state":"{state}"{extra}}}"#).as_bytes()).unwrap().unwrap()
+}
+fn tool_event(json:&str)->crate::integrations::Event {crate::integrations::parse(json.as_bytes()).unwrap().unwrap()}
+fn notice_tool(h:&H)->Option<crate::integration_ui::ToolNotice>{h.app.notice.as_ref().and_then(|a|a.tool.clone())}
+
+#[test]
+fn voice_activity_preempts_notices_and_hands_them_back(){
+    use crate::integration_ui::ToolNotice;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    h.app.alert("喝水时间到了","休息一下，喝 250 ml 水吧",2,false);
+    for _ in 0..10 {h.frame(vec![]);}
+    assert_eq!(h.app.notice.as_ref().unwrap().title,"喝水时间到了");
+    assert_eq!(h.app.integration_flags(),[true,true,true,true]);
+    h.app.integration_event(voice_event("listening",r#","mode":"dictate","mic":"C925e""#));
+    h.frame(vec![]);
+    assert_eq!(notice_tool(&h),Some(ToolNotice::Voice),"听写开始立即接管岛");
+    assert_eq!(h.app.alerts.front().unwrap().title,"喝水时间到了","被打断的提醒排回队首");
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"brightness","percent":45,"from":38}"#));
+    for i in 0..40 {h.app.integration_event(voice_event("level",&format!(r#","level":{}"#,0.3+0.3*((i%4) as f32/3.0))));h.frame(vec![]);}
+    assert_eq!(notice_tool(&h),Some(ToolNotice::Voice),"听写期间其它提示不抢占");
+    assert!(h.app.voice_level>0.2,"电平条跟随 level 事件");
+    let (width,_)=h.app.tool_notice_size(&ToolNotice::Voice);
+    assert!((h.app.current_width()-(width+h.app.pet_space())).abs()<2.0,"收起的岛变成语音胶囊");
+    assert!(h.animating,"听写时持续动画");
+    h.app.integration_event(voice_event("recognizing",""));h.frame(vec![]);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="识")),"识别中逐字闪光");
+    h.app.integration_event(voice_event("done",r#","text":"明天上午十点开会""#));
+    for _ in 0..60 {h.frame(vec![]);}
+    assert_eq!(notice_tool(&h),Some(ToolNotice::Voice));
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="明天上午十点开会")));
+    for _ in 0..80 {h.frame(vec![]);}
+    assert_ne!(notice_tool(&h),Some(ToolNotice::Voice),"结果显示约 2 秒后收起");
+    assert_eq!(h.app.notice.as_ref().unwrap().title,"喝水时间到了","之后继续显示排队的提醒");
+    assert!(h.app.alerts.iter().any(|a|a.tool==Some(ToolNotice::Brightness)));
+
+    // 关闭开关后不显示，也不回复 display:true。
+    h.app.settings.tool_voice=false;
+    h.app.integration_event(voice_event("listening",""));h.frame(vec![]);
+    assert!(h.app.integrations.voice.is_none() && notice_tool(&h)!=Some(ToolNotice::Voice));
+    assert!(!h.app.integration_flags()[0]);
+    // 卡住的会话 20 秒后自动结束。
+    h.app.settings.tool_voice=true;h.app.notice=None;h.app.alerts.clear();
+    h.app.integration_event(voice_event("listening",""));h.frame(vec![]);
+    assert_eq!(notice_tool(&h),Some(ToolNotice::Voice));
+    for _ in 0..(21*60) {h.frame(vec![]);}
+    assert!(h.app.integrations.voice.is_none() && h.app.notice.is_none());
+}
+
+#[test]
+fn voice_activity_takes_over_island_lyrics(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.island_lyrics=true;
+    h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"晴天".into(),artist:"周杰伦".into(),duration:269.0,playing:true,..Default::default()};
+    h.frame(vec![]);
+    h.app.set_lyrics("晴天","周杰伦",269.0,crate::lyrics::Lyrics{synced:true,lines:vec![crate::lyrics::LyricsLine{t:0.0,text:"故事的小黄花".into()}]});
+    for _ in 0..30 {h.frame(vec![]);}
+    h.app.integration_event(voice_event("listening",r#","mic":"C925e""#));
+    for _ in 0..30 {h.frame(vec![]);}
+    assert!(!h.app.compact_notices(),"语音胶囊不缩成歌词旁的小图标");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="C925e")));
+}
+
+#[test]
+fn tool_notices_follow_claude_and_brightness_events(){
+    use crate::integration_ui::ToolNotice;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    let claude=|state:&str|tool_event(&format!(r#"{{"source":"deskhub","kind":"claude","session":"s1","title":"xiaotang-daozai","state":"{state}"}}"#));
+    h.app.integration_event(claude("approval"));h.frame(vec![]);
+    let a=h.app.notice.clone().unwrap();
+    assert_eq!((a.title.as_str(),a.body.as_str(),a.duration),("xiaotang-daozai","Claude 要你批准",10.0));
+    assert!(matches!(h.app.resident_indicators().as_slice(),[crate::integrations::Indicator::Claude{count:1,approval:true,..}]));
+    h.app.integration_event(claude("working"));h.frame(vec![]);
+    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty(),"开始工作后撤下等待提醒");
+    h.app.integration_event(claude("done"));h.frame(vec![]);
+    assert_eq!(notice_tool(&h),Some(ToolNotice::ClaudeDone("s1".into())));
+    for _ in 0..30 {h.frame(vec![]);}h.click_text("知道了");assert!(h.app.notice.is_none());
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":false,"missed":3}"#));h.frame(vec![]);
+    assert_eq!(h.app.notice.as_ref().unwrap().body,"期间错过 3 条");h.app.notice=None;
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"reminder","type":"eye","title":"护眼提醒","body":"看看远处 20 秒"}"#));h.frame(vec![]);
+    assert_eq!(h.app.notice.as_ref().unwrap().title,"护眼提醒");for _ in 0..30 {h.frame(vec![]);}h.click_text("知道了");assert!(h.app.notice.is_none());
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"away","state":"countdown","seconds":10}"#));
+    for _ in 0..70 {h.frame(vec![]);}
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="9 秒后黑屏")),"倒计时随时间减少");
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"away","state":"cancel"}"#));h.frame(vec![]);
+    assert!(h.app.notice.is_none(),"回来后撤下倒计时");
+    h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"brightness","percent":60,"from":40}"#));h.frame(vec![]);
+    assert!(h.app.notice.as_ref().is_some_and(|a|a.is_hud()&&a.body=="60%"));
+    // 关闭对应开关后静默，只更新状态。
+    h.app.notice=None;h.app.settings.tool_claude=false;h.app.settings.tool_brightness=false;
+    h.app.integration_event(claude("waiting"));h.app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"brightness","percent":20}"#));h.frame(vec![]);
+    assert!(h.app.notice.is_none() && h.app.alerts.is_empty() && h.app.resident_indicators().is_empty());
+    assert_eq!(h.app.integrations.claude.len(),1);
+}
+
+/// `DAOZAI_INTEGRATION_PREVIEW_DIR=… cargo test --lib integration_gallery -- --ignored`
+#[test]
+#[ignore]
+fn integration_gallery(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_INTEGRATION_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    type Script=Box<dyn Fn(&mut App,usize)>;
+    let scenes:Vec<(&str,usize,Script)>=vec![
+        ("voice-listening",80,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mode":"dictate","mic":"C925e""#));}app.integration_event(voice_event("level",&format!(r#","level":{}"#,0.55+0.25*((f as f32)*0.7).sin())));})),
+        ("voice-command",80,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mode":"command","mic":"AJAZZ 鼠标""#));}app.integration_event(voice_event("level",&format!(r#","level":{}"#,0.4+0.3*((f as f32)*0.9).sin())));})),
+        ("voice-partial",80,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mic":"NVIDIA Broadcast""#));}if f==20{app.integration_event(voice_event("partial",r#","text":"今天下午三点和设计组一起评审新版灵动岛的交互方案""#));}app.integration_event(voice_event("level",r#","level":0.5"#));})),
+        ("voice-recognizing",70,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mic":"C925e""#));}if f==20{app.integration_event(voice_event("recognizing",""));}})),
+        ("voice-done",80,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mic":"C925e""#));}if f==20{app.integration_event(voice_event("done",r#","text":"明天上午十点和产品组开会""#));}})),
+        ("voice-result",80,Box::new(|app,f|{if f==0{app.integration_event(voice_event("listening",r#","mode":"command""#));}if f==20{app.integration_event(voice_event("command_result",r#","text":"已开始 25 分钟专注","ok":true"#));}})),
+        ("brightness",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"brightness","percent":62,"from":40}"#));}})),
+        ("claude",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"xiaotang-daozai","state":"approval"}"#));}})),
+        ("claude-done",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"deskhub","state":"done"}"#));}})),
+        ("reminder",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"reminder","type":"sit","title":"久坐提醒","body":"已经坐了 50 分钟，起来活动一下"}"#));}})),
+        ("away",90,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"autobrightness","kind":"away","state":"countdown","seconds":10}"#));}})),
+        ("focus-ended",60,Box::new(|app,f|{if f==0{app.integration_event(tool_event(r#"{"source":"deskhub","kind":"focus","active":false,"missed":3}"#));}})),
+    ];
+    for (name,frames,script) in scenes {
+        let mut h=H::new();h.app.shelf.items.clear();
+        let ppp=2.0;let (w,hgt)=((WIN_W*ppp) as usize,(WIN_H*ppp) as usize);
+        let mut raster=crate::preview_raster::Raster::new(w,hgt);
+        let mut rgba=Vec::new();
+        for frame in 0..frames {
+            let t=frame as f64/60.0+1.0;
+            script(&mut h.app,frame);
+            let env=Env{t,clock:"09:41:00".into(),today:"2026-11-05".into(),date:"11月5日 周四".into(),..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H))),time:Some(t),
+                viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{let win=ui.max_rect();h.app.frame(ui,win,&env);});});
+            raster.update_textures(&output.textures_delta);
+            if frame==frames-1 {raster.buf.fill([0.09,0.11,0.18,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);raster.to_rgba8(&mut rgba);}
+            raster.free_textures(&output.textures_delta);
+        }
+        // 只保留岛所在的顶部一条，放大便于检查细节。
+        let (x0,x1,rows)=((w as f32*0.18) as usize,(w as f32*0.82) as usize,(64.0*ppp) as usize);
+        let crop:Vec<u8>=(0..rows).flat_map(|y|rgba[(y*w+x0)*4..(y*w+x1)*4].to_vec()).collect();
+        image::save_buffer(dest.join(format!("{name}.png")),&crop,(x1-x0) as u32,rows as u32,image::ColorType::Rgba8).unwrap();
+    }
+}

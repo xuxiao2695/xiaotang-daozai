@@ -127,11 +127,16 @@ pub struct Settings {
     pub calendar_auto_sync: bool,
     /// 界面大小（百分比，100–200，步进 25），整体放大岛和设置窗口。
     pub ui_scale: u32,
+    /// 小工具联动：岛上显示语音输入、亮度提示、Claude 提醒、睿频提示。
+    pub tool_voice: bool,
+    pub tool_brightness: bool,
+    pub tool_claude: bool,
+    pub tool_boost: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, ui_scale: 100 }
+        Self { display_id: String::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, ui_scale: 100, tool_voice: true, tool_brightness: true, tool_claude: true, tool_boost: true }
     }
 }
 
@@ -207,6 +212,10 @@ impl Settings {
                 "calendar_prompt" => s.calendar_prompt = v != "0",
                 "calendar_auto_sync" => s.calendar_auto_sync = v != "0",
                 "ui_scale" => s.ui_scale = clamp_ui_scale(v.parse().unwrap_or(100)),
+                "tool_voice" => s.tool_voice = v != "0",
+                "tool_brightness" => s.tool_brightness = v != "0",
+                "tool_claude" => s.tool_claude = v != "0",
+                "tool_boost" => s.tool_boost = v != "0",
                 _ => {}
             }
         }
@@ -256,6 +265,10 @@ impl Settings {
                 ("calendar_prompt".into(), (self.calendar_prompt as u8).to_string()),
                 ("calendar_auto_sync".into(), (self.calendar_auto_sync as u8).to_string()),
                 ("ui_scale".into(), self.ui_scale.to_string()),
+                ("tool_voice".into(), (self.tool_voice as u8).to_string()),
+                ("tool_brightness".into(), (self.tool_brightness as u8).to_string()),
+                ("tool_claude".into(), (self.tool_claude as u8).to_string()),
+                ("tool_boost".into(), (self.tool_boost as u8).to_string()),
             ],
         );
     }
