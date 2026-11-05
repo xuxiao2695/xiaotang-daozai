@@ -30,6 +30,8 @@ const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 static HIT: OnceLock<Mutex<Vec<(i32, i32, i32, i32)>>> = OnceLock::new();
 /// 前台窗口切到别的进程时置位，由主线程消费。
 static FG_CHANGED: AtomicBool = AtomicBool::new(false);
+// 远程桌面拿到前台时它的全屏窗口会盖住岛，下一帧把岛重新抬到最上层。
+static RAISE_OVER_FG: AtomicBool = AtomicBool::new(false);
 
 // `WS_EX_NOREDIRECTIONBITMAP` 只能在 CreateWindowEx 时设置（运行时 SetWindowLongPtrW
 // 会回 ERROR_INVALID_PARAMETER），本项目用 GL 合成窗口，加上这一位后画面上什么都
@@ -139,6 +141,9 @@ unsafe extern "system" fn on_foreground(
     // 自己（含托盘窗口）拿到前台不算「切走」
     if pid != 0 && pid != GetCurrentProcessId() {
         FG_CHANGED.store(true, Ordering::Relaxed);
+        if crate::system::is_remote_desktop_window(hwnd) {
+            RAISE_OVER_FG.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -290,7 +295,8 @@ impl Window {
                 }
             }
         }
-        unsafe { apply_style(self.hwnd, editing, expanded && !self.expanded) };
+        let raise = (expanded && !self.expanded) || RAISE_OVER_FG.swap(false, Ordering::Relaxed);
+        unsafe { apply_style(self.hwnd, editing, raise) };
         self.expanded = expanded;
     }
 }

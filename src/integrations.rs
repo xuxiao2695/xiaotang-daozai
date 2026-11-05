@@ -308,6 +308,8 @@ pub enum Indicator {
     Meeting,
     Focus { ends_at: i64 },
     Boost { reason: String },
+    /// Claude 正在干活（没有会话在等你时，让 DeskHub 在岛上也有个常驻的影子）
+    ClaudeWorking { count: usize, title: String },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -470,6 +472,13 @@ impl State {
         if deskhub && self.meeting { out.push(Indicator::Meeting); }
         if let Some(ends_at) = self.focus_ends_at.filter(|end| deskhub && *end > now) { out.push(Indicator::Focus { ends_at }); }
         if boost { if let Some(reason) = &self.boost { out.push(Indicator::Boost { reason: reason.clone() }); } }
+        // 有会话在等你时琥珀色星芒已经说明了 Claude，不再重复
+        if deskhub && waiting.is_empty() {
+            let working: Vec<_> = self.claude.iter().filter(|s| s.state == ClaudeState::Working).collect();
+            if let Some(first) = working.iter().min_by(|a, b| a.since.total_cmp(&b.since)) {
+                out.push(Indicator::ClaudeWorking { count: working.len(), title: first.title.clone() });
+            }
+        }
         out
     }
 }
@@ -653,7 +662,8 @@ mod tests {
         assert_eq!(s.apply(claude("a", ClaudeState::Working), 4.0, 0), vec![Show::ClaudeEnd { session: "a".into() }]);
         assert_eq!(s.indicators(0, true, true), vec![Indicator::Claude { count: 1, title: "项目 b".into(), approval: true }]);
         assert_eq!(s.apply(claude("b", ClaudeState::Done), 5.0, 0), vec![Show::ClaudeEnd { session: "b".into() }, Show::ClaudeDone { session: "b".into(), title: "项目 b".into() }]);
-        assert!(s.indicators(0, true, true).is_empty());
+        assert_eq!(s.indicators(0, true, true), vec![Indicator::ClaudeWorking { count: 1, title: "项目 a".into() }], "没人等你时显示正在干活的会话");
+        assert!(s.indicators(0, false, true).is_empty());
         s.apply(claude("c", ClaudeState::Waiting), 6.0, 0);
         s.apply(claude("c", ClaudeState::Clear), 7.0, 0);
         assert_eq!(s.claude.iter().map(|c| (c.session.as_str(), c.state)).collect::<Vec<_>>(), vec![("a", ClaudeState::Working)]);

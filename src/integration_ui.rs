@@ -77,7 +77,7 @@ impl App {
     }
     /// Claude 等待时琥珀色小点呼吸，需要持续重绘。
     pub(crate) fn indicators_animate(&self) -> bool {
-        bar::animations_enabled() && self.shown_indicators().iter().any(|i| matches!(i, Indicator::Claude { .. }))
+        bar::animations_enabled() && self.shown_indicators().iter().any(|i| matches!(i, Indicator::Claude { .. } | Indicator::ClaudeWorking { .. }))
     }
 
     /// 收起的常驻栏上画小工具指示；点一下打开小工具页。
@@ -474,6 +474,16 @@ pub(crate) fn indicator_glyph(c: &Card, x: f32, y: f32, indicator: &Indicator, t
             c.glow(x, y, 9.0, paint::alpha(ORANGE, 0.28));
             crate::tools::bolt(c, x, y, 0.95, ORANGE);
         }
+        Indicator::ClaudeWorking { count, .. } => {
+            // 安静的灰白星芒慢慢转，表示 Claude 在干活、不需要你
+            let spin = 0.85 + 0.15 * (t * 1.5).sin();
+            claude_mark(&c.scaled(x, y, spin), x, y, 6.2, Color32::from_gray(190));
+            c.circle(x, y, 1.4, Color32::from_gray(190));
+            if *count > 1 {
+                c.circle(x + 6.5, y + 6.0, 4.2, Color32::from_gray(120));
+                c.centered_text(x + 6.5, y + 6.0, &count.min(&9).to_string(), 6.5, W::Bold, theme::WHITE, H::Center);
+            }
+        }
     }
 }
 
@@ -485,5 +495,7 @@ pub(crate) fn indicator_tip(indicator: &Indicator, now: i64) -> String {
         Indicator::Focus { ends_at } => format!("专注中 · 还剩 {} 分钟", ((ends_at - now).max(0) + 59) / 60),
         Indicator::Boost { reason } if reason.is_empty() => "AutoBoost 睿频中".into(),
         Indicator::Boost { reason } => format!("AutoBoost 睿频中 · {reason}"),
+        Indicator::ClaudeWorking { count: 1, title } => format!("{title} · Claude 正在干活"),
+        Indicator::ClaudeWorking { count, title } => format!("{count} 个 Claude 会话正在干活（最早：{title}）"),
     }
 }
