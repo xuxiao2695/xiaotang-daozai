@@ -1289,7 +1289,9 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let want = (inside && !self.hover_lock && !(self.indicator_hover && !self.open) && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        // 上一帧停在常驻图标上；每帧取走，这一帧没画图标（比如在显示歌词）就自然清零
+        let on_indicator = std::mem::take(&mut self.indicator_hover);
+        let want = (inside && !self.hover_lock && !(on_indicator && !self.open) && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         self.update_pet(env, cx);
 
@@ -1629,7 +1631,7 @@ impl App {
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
         }
-        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);} else {self.indicator_hover=false;}
+        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);}
     }
 
     fn update_pet(&mut self, env: &Env, cx: f32) {

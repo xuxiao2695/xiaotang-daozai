@@ -4537,3 +4537,24 @@ fn tools_page_cards_show_live_state_and_run_their_actions(){
     let (x,y,w,hh)=crate::tools::GRID;assert!(x>=40.0 && x+2.0*w+7.0<=379.0 && y>=33.0 && y+2.0*hh+5.0<=128.0);
     let _=std::fs::remove_dir_all(folder);
 }
+
+#[test]
+fn hovering_a_resident_icon_never_blocks_the_island_later(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings.island_lyrics=true;h.frame(vec![]);
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"t","state":"working"}"#));
+    for _ in 0..120 {h.frame(vec![]);}
+    // 停在常驻图标上：只出提示不展开
+    let on_icon=WIN_W/2.0+h.app.resident.target.x[crate::bar_layout::TOOLS].expect("常驻图标有位置");
+    h.hover(Pos2::new(on_icon,15.0),0.2);
+    assert!(h.app.indicator_hover,"鼠标在常驻图标上");
+    h.hover(Pos2::new(on_icon,15.0),1.2);
+    assert!(!h.app.open,"停在常驻图标上不展开");
+    // 鼠标还在图标上时开始放歌、岛上显示歌词：图标不再画
+    h.media=crate::smtc::NowPlaying{source:"KuGou.exe".into(),title:"Track".into(),artist:"Artist".into(),duration:120.0,playing:true,..Default::default()};
+    h.frame(vec![]);
+    h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:00]开头\n[00:30]中段"));
+    for _ in 0..60 {h.frame(vec![]);}
+    h.hover(Pos2::new(5.0,150.0),1.5);
+    h.hover(Pos2::new(WIN_W/2.0,15.0),1.2);
+    assert!(h.app.open,"放音乐时悬停岛中间照常展开");
+}
