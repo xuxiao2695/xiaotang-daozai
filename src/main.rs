@@ -20,6 +20,8 @@ struct Shell {
     placed: bool,
     placement_at: PollClock,
     placement_scale: f32,
+    /// 上次按哪个 pixels_per_point 调整过窗口物理尺寸（界面缩放改变后需要重设）。
+    sized_ppp: f32,
     win_x: f32,
     sys: (Option<u8>, bool, PollClock),
     #[cfg(windows)]
@@ -62,6 +64,8 @@ struct Shell {
 impl Shell {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         diagnostics::graphics(cc);
+        // 缩放由设置里的「界面大小」统一管理；系统自带的 Ctrl +/- 不会同步窗口尺寸，会把画面裁掉。
+        cc.egui_ctx.options_mut(|o|o.zoom_with_keyboard=false);
         diagnostics::startup("加载本地配置");
         let mut app = App::new(&cc.egui_ctx, Options::default());
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
@@ -107,6 +111,7 @@ impl Shell {
             placed: false,
             placement_at: PollClock::default(),
             placement_scale: 0.0,
+            sized_ppp: 0.0,
             win_x: 0.0,
             sys: (None, false, PollClock::default()),
             #[cfg(windows)]
@@ -229,6 +234,21 @@ impl eframe::App for Shell {
         if daozai::native::take_foreground_change() {
             // 切到别的程序：收起，并在光标离开前不再自动展开
             self.app.foreground_changed();
+        }
+        // 界面大小：整体放大 egui 的缩放，并把透明画布窗口同步调成对应的物理尺寸。
+        {
+            #[allow(unused_mut)]
+            let mut zoom=self.app.settings.ui_scale as f32/100.0;
+            #[cfg(windows)]
+            if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
+                let native=ctx.pixels_per_point()/ctx.zoom_factor();
+                zoom=daozai::display_layout::fit_zoom(zoom,native,(display.bounds.right-display.bounds.left) as f32,app::CANVAS_W);
+            }
+            if (ctx.zoom_factor()-zoom).abs()>1e-3 {ctx.set_zoom_factor(zoom);}
+            if self.sized_ppp!=ctx.pixels_per_point() {
+                self.sized_ppp=ctx.pixels_per_point();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(app::CANVAS_W,app::WIN_H)));
+            }
         }
         #[cfg(windows)]
         if !self.placed || self.placement_scale!=ctx.pixels_per_point() || self.placement_at.ready(Duration::from_secs(1)) {

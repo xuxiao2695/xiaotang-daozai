@@ -963,7 +963,7 @@ impl App {
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","饮水记录与提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程"];
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","饮水记录与提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","AutoBrightness、VoiceInput 状态与一键打开"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序，松开后自动应用到岛。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
@@ -1028,6 +1028,16 @@ impl App {
                             ui.add_space(3.0);
                             ui.label(egui::RichText::new("仅影响设置页，岛的外观保持不变。").size(11.5)
                                 .color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(105))));
+                        });
+                        settings_label(ui,"界面大小");
+                        settings_card(ui,|ui|{
+                            ui.horizontal(|ui|{
+                                ui.add_sized([56.0,30.0],egui::Label::new("缩放"));
+                                for percent in [100,125,150,175,200] {
+                                    if ui.add_sized([56.0,30.0],egui::SelectableLabel::new(self.settings.ui_scale==percent,format!("{percent}%"))).clicked(){self.settings.ui_scale=percent;}
+                                }
+                            });
+                            ui.label(egui::RichText::new("同时放大岛和设置窗口；超出屏幕宽度时会自动限制在能完整显示的最大值。").size(11.0).color(ui.visuals().weak_text_color()));
                         });
                         settings_label(ui,"启动");
                         settings_card(ui,|ui|{

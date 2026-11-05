@@ -44,6 +44,25 @@
 
 专注与休息需点击开始，结束后可进入下一阶段。饮水可设置目标、单次量、提醒间隔和时段；记录错误可以撤销。待办提醒是可选项，填写任务后通过日期／时间选择器设置，不需要手写时间格式。
 
+## 界面大小
+
+觉得岛上的字太小时，在 设置 → 常规 → 界面大小 选 125%–200%。岛和设置窗口会一起放大；如果放大后整块画布超过屏幕宽度，会自动限制在能完整显示的最大倍数。
+
+## 小工具
+
+「小工具」页显示自动亮度（AutoBrightness）和语音输入（VoiceInput）：
+
+- 状态：运行中 / 未运行 / 未安装。运行判断依据是它们各自的单实例互斥体。
+- 关键设置：读取 exe 同目录的 `config.json`，只读不改。
+- 按钮：未运行时「启动」；运行中时「打开」会把它的窗口带到前台；没装时「获取」打开项目主页。
+
+默认在 `%USERPROFILE%\AutoBrightness\AutoBrightness.exe` 和 `%USERPROFILE%\VoiceInput\VoiceInput.exe` 查找。装在别处时，在 `%APPDATA%\Daozai\tools.txt` 里逐行写：
+
+```
+autobrightness=D:\Apps\AutoBrightness\AutoBrightness.exe
+voiceinput=D:\Apps\VoiceInput\VoiceInput.exe
+```
+
 ## AI 额度
 
 先登录相应工具，再在岛仔 AI 额度设置中识别本机账号。多个账号可分别命名、选择配色并决定是否常驻。Codex、Claude、Kimi 的本机登录由原工具管理，岛仔不会修改它们的配置。

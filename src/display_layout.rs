@@ -38,6 +38,14 @@ pub fn connected()->Vec<Display>{
 #[cfg(not(windows))]
 pub fn connected()->Vec<Display>{Vec::new()}
 
+/// 把用户选的界面倍数限制到整块透明画布（`canvas_width` 逻辑点）能放进屏幕：
+/// 总缩放（系统缩放 × 倍数）不超过 屏幕物理宽度 / 画布宽度，且不小于 1。
+pub fn fit_zoom(want:f32, native_ppp:f32, monitor_width_px:f32, canvas_width:f32)->f32 {
+    if !want.is_finite() || want<=1.0 {return 1.0;}
+    if !native_ppp.is_finite() || native_ppp<=0.0 || !monitor_width_px.is_finite() || monitor_width_px<=0.0 {return want;}
+    want.min((monitor_width_px/(canvas_width*native_ppp)).max(1.0))
+}
+
 pub fn island_origin(m:Bounds, island_width:f32, scale:f32)->Option<(i32,i32)> {
     if m.right<=m.left || m.bottom<=m.top || !scale.is_finite() || scale<=0.0 || !island_width.is_finite() || island_width<=0.0 {return None;}
     let width=(island_width as f64*scale as f64).round();
@@ -48,6 +56,17 @@ pub fn island_origin(m:Bounds, island_width:f32, scale:f32)->Option<(i32,i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn zoom_never_makes_canvas_wider_than_the_screen(){
+        // 1080p、系统 100%：960 点画布最多放大到 2 倍；系统 125% 时只剩 1.6 倍。
+        assert_eq!(fit_zoom(2.0,1.0,1920.0,960.0),2.0);
+        assert!((fit_zoom(2.0,1.25,1920.0,960.0)-1.6).abs()<1e-5);
+        // 4K、系统 150%：2 倍没问题。
+        assert_eq!(fit_zoom(2.0,1.5,3840.0,960.0),2.0);
+        // 小屏幕不会缩到比 100% 还小；无效输入退回安全值。
+        assert_eq!(fit_zoom(1.5,1.0,800.0,960.0),1.0);
+        assert_eq!(fit_zoom(f32::NAN,1.0,1920.0,960.0),1.0);
+        assert_eq!(fit_zoom(1.5,0.0,1920.0,960.0),1.5);
+    }
     #[cfg(windows)]
     #[test] fn connected_displays_have_valid_bounds_and_distinct_ids(){
         let displays=connected();
