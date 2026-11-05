@@ -308,6 +308,8 @@ pub enum Indicator {
     Meeting,
     Focus { ends_at: i64 },
     Boost { reason: String },
+    /// AutoBoost 在跑、处于省电（常驻一个暗色闪电，表示它在守着）
+    BoostEco,
     /// Claude 正在干活（没有会话在等你时，让 DeskHub 在岛上也有个常驻的影子）
     ClaudeWorking { count: usize, title: String },
 }
@@ -331,6 +333,8 @@ pub struct State {
     pub deskhub_seen: Option<f64>,
     /// AutoBoost 处于睿频时的原因；由读取 AutoBoost 状态文件的一侧填写，None 表示省电或未运行。
     pub boost: Option<String>,
+    /// AutoBoost 在跑且没在睿频
+    pub boost_eco: bool,
 }
 
 impl State {
@@ -479,6 +483,7 @@ impl State {
                 out.push(Indicator::ClaudeWorking { count: working.len(), title: first.title.clone() });
             }
         }
+        if boost && self.boost.is_none() && self.boost_eco { out.push(Indicator::BoostEco); }
         out
     }
 }

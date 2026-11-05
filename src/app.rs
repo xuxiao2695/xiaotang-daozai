@@ -311,6 +311,8 @@ pub struct App {
     h: Spring,
     pub(crate) open: bool,
     hover_since: Option<f64>,
+    /// 鼠标停在常驻小工具图标上：只出提示，不展开岛（上一帧的结果）。
+    pub(crate) indicator_hover: bool,
     leave_since: Option<f64>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
     pub hover_lock: bool,
@@ -461,6 +463,7 @@ impl App {
             h: Spring::new(bh, CLOSE.0, CLOSE.1),
             open: false,
             hover_since: None,
+            indicator_hover: false,
             leave_since: None,
             hover_lock: false,
             reveal: 0.0,
@@ -1286,7 +1289,7 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        let want = (inside && !self.hover_lock && !(self.indicator_hover && !self.open) && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         self.update_pet(env, cx);
 
@@ -1626,7 +1629,7 @@ impl App {
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
         }
-        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);}
+        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);} else {self.indicator_hover=false;}
     }
 
     fn update_pet(&mut self, env: &Env, cx: f32) {

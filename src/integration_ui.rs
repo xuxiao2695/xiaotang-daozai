@@ -84,6 +84,7 @@ impl App {
     pub(crate) fn draw_tool_indicators(&mut self, c: &Card, cx: f32, layout: &bar::Layout) {
         let now = chrono::Utc::now().timestamp();
         let mut open = false;
+        let mut hovered = false;
         for (i, indicator) in self.shown_indicators().iter().enumerate() {
             let slot = bar::TOOLS + i;
             let Some(x) = layout.x[slot] else { continue };
@@ -92,8 +93,12 @@ impl App {
             let c = if alpha < 0.8 { faded.ghost() } else { faded };
             let x = cx + x;
             indicator_glyph(&c, x, 15.0, indicator, self.t as f32, now);
-            if crate::quota_ui::bar_tooltip(c.hit(x - 11.0, 3.0, 22.0, 25.0, ("tool-indicator", i)), format!("{}\n点击查看小工具", indicator_tip(indicator, now))).clicked() { open = true; }
+            let hit = c.hit(x - 11.0, 3.0, 22.0, 25.0, ("tool-indicator", i));
+            hovered |= hit.hovered();
+            if crate::quota_ui::bar_tooltip(hit, format!("{}\n点击查看小工具", indicator_tip(indicator, now))).clicked() { open = true; }
         }
+        // 停在图标上只看提示：岛不因悬停展开到上次的页面
+        self.indicator_hover = hovered;
         if open { self.show_page(crate::app::TOOLS_PAGE); }
     }
 
@@ -103,6 +108,7 @@ impl App {
         let after = self.autoboost.live().map(|b| (b.mode, b.reason.clone()));
         let before = std::mem::replace(&mut self.autoboost.seen, after.as_ref().map(|(mode, _)| *mode));
         self.integrations.boost = after.as_ref().filter(|(mode, _)| *mode == Mode::Boost).map(|(_, reason)| reason.clone());
+        self.integrations.boost_eco = after.as_ref().is_some_and(|(mode, _)| *mode != Mode::Boost);
         let Some((mode, reason)) = after else { return };
         // 刚启动（或主脚本刚开始运行）时只记下当前模式，不弹提示。
         if !(self.settings.tool_boost && self.settings.notifications) || before.is_none() || before == Some(mode) { return; }
@@ -474,6 +480,9 @@ pub(crate) fn indicator_glyph(c: &Card, x: f32, y: f32, indicator: &Indicator, t
             c.glow(x, y, 9.0, paint::alpha(ORANGE, 0.28));
             crate::tools::bolt(c, x, y, 0.95, ORANGE);
         }
+        Indicator::BoostEco => {
+            crate::tools::bolt(c, x, y, 0.85, Color32::from_gray(150));
+        }
         Indicator::ClaudeWorking { count, .. } => {
             // 安静的灰白星芒慢慢转，表示 Claude 在干活、不需要你
             let spin = 0.85 + 0.15 * (t * 1.5).sin();
@@ -495,6 +504,7 @@ pub(crate) fn indicator_tip(indicator: &Indicator, now: i64) -> String {
         Indicator::Focus { ends_at } => format!("专注中 · 还剩 {} 分钟", ((ends_at - now).max(0) + 59) / 60),
         Indicator::Boost { reason } if reason.is_empty() => "AutoBoost 睿频中".into(),
         Indicator::Boost { reason } => format!("AutoBoost 睿频中 · {reason}"),
+        Indicator::BoostEco => "AutoBoost 省电中 · 有负载时自动睿频".into(),
         Indicator::ClaudeWorking { count: 1, title } => format!("{title} · Claude 正在干活"),
         Indicator::ClaudeWorking { count, title } => format!("{count} 个 Claude 会话正在干活（最早：{title}）"),
     }

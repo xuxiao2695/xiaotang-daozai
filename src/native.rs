@@ -102,6 +102,14 @@ unsafe extern "system" fn subclass(
     // 保留框架的焦点通知；lParam=-1 禁止系统在激活时重画透明窗口的顶边。
     if msg==WM_NCACTIVATE {return DefSubclassProc(hwnd,msg,wp,LPARAM(-1));}
     if msg==WM_NCPAINT {return LRESULT(0);}
+    // 远程桌面全屏时键盘都被它抓着：点岛就把前台拿回本机（激活岛自己），
+    // 之后 Alt+Tab 切的是本机的程序，不用先把远程桌面最小化。
+    if msg == WM_MOUSEACTIVATE {
+        let fg = GetForegroundWindow();
+        if !fg.0.is_null() && fg != hwnd && crate::system::is_remote_desktop_window(fg) {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
     if msg == WM_MOUSEACTIVATE
         && GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE.0 as isize != 0
     {
