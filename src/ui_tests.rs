@@ -322,6 +322,7 @@ impl H {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("daozai-test-{}-{}", std::process::id(), rand_id()));
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
+        std::env::set_var("DAOZAI_TEST_HOME", dir.join("home"));
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
         Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
@@ -4436,13 +4437,15 @@ fn boost(mode:crate::autoboost::Mode,reason:&str)->Option<crate::autoboost::Boos
 fn autoboost_switches_show_a_hud_and_a_resident_bolt(){
     use crate::{autoboost::Mode,integration_ui::ToolNotice,integrations::Indicator,bar_layout::TOOLS};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    for _ in 0..20 {h.frame(vec![]);}
+    assert!(h.app.resident_indicators().is_empty() && h.app.resident.target.x[TOOLS].is_none(),"AutoBoost 没在跑、也没有别的指示时不占位");
     h.app.autoboost.set(None,boost(Mode::Boost,"刚启动"),true);h.frame(vec![]);
     assert!(h.app.notice.is_none(),"第一次读到状态不提示");
     h.app.autoboost.set(None,boost(Mode::Eco,"空闲 30 秒"),true);h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|(a.body.as_str(),a.is_hud())),Some(("已回到省电",true)));
     for _ in 0..200 {h.frame(vec![]);}
-    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty());
-    assert!(h.app.resident.target.x[TOOLS].is_none(),"没有指示时不占位");
+    assert!(h.app.notice.is_none());
+    assert!(matches!(h.app.resident_indicators().as_slice(),[Indicator::BoostEco]),"省电时常驻暗色闪电");
     h.app.autoboost.set(None,boost(Mode::Boost,"cl.exe 占用 3.2 核"),true);for _ in 0..20 {h.frame(vec![]);}
     let a=h.app.notice.clone().unwrap();
     assert_eq!((a.tool,a.body.as_str()),(Some(ToolNotice::Boost(true)),"已开启睿频 · cl.exe 占用 3.2 核"));
