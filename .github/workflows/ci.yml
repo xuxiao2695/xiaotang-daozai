@@ -21,6 +21,12 @@ jobs:
           cargo +stable build --locked --release --bin daozai --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw '发布构建失败' }
           ./scripts/check-runtime.ps1 -Executable ./target/x86_64-pc-windows-msvc/release/daozai.exe
+      - name: 上传 daozai.exe（本机没有编译环境时直接下载安装）
+        uses: actions/upload-artifact@v4
+        with:
+          name: daozai-exe
+          path: target/x86_64-pc-windows-msvc/release/daozai.exe
+          retention-days: 7
       - name: 检查安装脚本语法
         shell: pwsh
         run: |
