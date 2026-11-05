@@ -164,7 +164,7 @@ impl Settings {
                 "avoid_browsers" => s.avoid_browsers = v != "0",
                 "avoid_apps" => s.avoid_apps = serde_json::from_str(&v).unwrap_or_default(),
                 "resident_order" => {
-                    let order:Vec<usize>=v.split(',').filter_map(|n|n.parse().ok()).collect();
+                    let order:Vec<usize>=crate::bar_layout::upgrade_order(v.split(',').filter_map(|n|n.parse().ok()).collect());
                     if crate::bar_layout::valid_order(&order){s.resident_order=order;}
                 }
                 "page_order" => {
