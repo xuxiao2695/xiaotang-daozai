@@ -20,6 +20,8 @@ struct Shell {
     placed: bool,
     placement_at: PollClock,
     placement_scale: f32,
+    /// 上次按哪个 pixels_per_point 调整过窗口物理尺寸（界面缩放改变后需要重设）。
+    sized_ppp: f32,
     win_x: f32,
     sys: (Option<u8>, bool, PollClock),
     #[cfg(windows)]
@@ -57,11 +59,17 @@ struct Shell {
     quota: daozai::quota::Service,
     quota_sig: Option<(bool,Vec<daozai::quota::Account>)>,
     quota_at: PollClock,
+    /// 小工具联动端口；被占用时为 None，岛仔照常运行。
+    integrations: Option<daozai::integrations::Server>,
+    /// 小工具页的后台操作（启动 AutoBoost、DeskHub 控制口）失败时把提示送回界面。
+    tool_feedback: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
 }
 
 impl Shell {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         diagnostics::graphics(cc);
+        // 缩放由设置里的「界面大小」统一管理；系统自带的 Ctrl +/- 不会同步窗口尺寸，会把画面裁掉。
+        cc.egui_ctx.options_mut(|o|o.zoom_with_keyboard=false);
         diagnostics::startup("加载本地配置");
         let mut app = App::new(&cc.egui_ctx, Options::default());
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
@@ -92,6 +100,12 @@ impl Shell {
         #[cfg(windows)]
         let incoming=if app.settings.read_notifications {match daozai::system::connect(){Ok(rx)=>Some(rx),Err(e)=>{app.listener_status=format!("Windows 无法读取通知：{}",e.code());None}}}else{None};
         // 音频、网络与输入法查询由后台完成，避免首帧等待系统服务。
+        diagnostics::startup("启动小工具联动端口");
+        let integrations={let ctx=cc.egui_ctx.clone();daozai::integrations::Server::start(daozai::integrations::PORT,move||ctx.request_repaint())};
+        let integrations=match integrations {
+            Ok(server)=>{app.integration_status=format!("已就绪 · 127.0.0.1:{}",server.port);Some(server)},
+            Err(error)=>{app.integration_status=daozai::integrations::log_failure(&error);None},
+        };
         diagnostics::startup("创建后台采样与窗口");
         let initial_input=None;
         #[cfg(windows)] let system_state=daozai::system::Snapshot::default();
@@ -107,6 +121,7 @@ impl Shell {
             placed: false,
             placement_at: PollClock::default(),
             placement_scale: 0.0,
+            sized_ppp: 0.0,
             win_x: 0.0,
             sys: (None, false, PollClock::default()),
             #[cfg(windows)]
@@ -134,6 +149,8 @@ impl Shell {
             cal: daozai::calendar::Service::start(),
             cal_sig: (Vec::new(), true),
             quota: daozai::quota::Service::start(), quota_sig: None, quota_at: PollClock::default(),
+            integrations,
+            tool_feedback: std::sync::mpsc::channel(),
         }
     }
 
@@ -230,6 +247,21 @@ impl eframe::App for Shell {
             // 切到别的程序：收起，并在光标离开前不再自动展开
             self.app.foreground_changed();
         }
+        // 界面大小：整体放大 egui 的缩放，并把透明画布窗口同步调成对应的物理尺寸。
+        {
+            #[allow(unused_mut)]
+            let mut zoom=self.app.settings.ui_scale as f32/100.0;
+            #[cfg(windows)]
+            if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
+                let native=ctx.pixels_per_point()/ctx.zoom_factor();
+                zoom=daozai::display_layout::fit_zoom(zoom,native,(display.bounds.right-display.bounds.left) as f32,app::CANVAS_W);
+            }
+            if (ctx.zoom_factor()-zoom).abs()>1e-3 {ctx.set_zoom_factor(zoom);}
+            if self.sized_ppp!=ctx.pixels_per_point() {
+                self.sized_ppp=ctx.pixels_per_point();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(app::CANVAS_W,app::WIN_H)));
+            }
+        }
         #[cfg(windows)]
         if !self.placed || self.placement_scale!=ctx.pixels_per_point() || self.placement_at.ready(Duration::from_secs(1)) {
             self.placement_at=PollClock::now();
@@ -297,6 +329,13 @@ impl eframe::App for Shell {
                 if !success{self.app.say("播放器未完成跳转，请打开客户端后重试");}
             }
         }
+        if let Some(server)=&self.integrations {
+            while let Some(event)=server.try_recv(){self.app.integration_event(event);}
+            #[cfg(windows)] let visible=!self.hidden;
+            #[cfg(not(windows))] let visible=true;
+            server.gate.set(self.app.integration_flags(),visible);
+        }
+        while let Ok(message)=self.tool_feedback.1.try_recv(){self.app.say(message);}
         let env = self.env(ctx);
         // v0.5.5 邮件：开关 / 间隔 / 账号清单变了就重新对齐收信线程，再把事件交给界面。
         let sig=(self.app.settings.mail_enabled,self.app.settings.mail_interval,self.app.mail_accounts().to_vec());
@@ -417,6 +456,14 @@ impl eframe::App for Shell {
                     self.cal_sig=(configs,self.app.settings.calendar_auto_sync);
                 },
                 Cmd::Focus => ctx.send_viewport_cmd(egui::ViewportCommand::Focus),
+                Cmd::RunHidden(program,args)=>{
+                    if let Err(e)=daozai::integrations::run_hidden(&program,&args){self.app.say(format!("无法运行 {program}：{e}"));}
+                },
+                Cmd::DeskHub(path)=>{
+                    // 控制口在本机，但仍放到后台线程，DeskHub 卡住时不拖慢界面。
+                    let (tx,ctx)=(self.tool_feedback.0.clone(),ctx.clone());
+                    std::thread::spawn(move||{if let Err(e)=daozai::integrations::deskhub_post(&path){let _=tx.send(e);ctx.request_repaint();}});
+                },
             }
         }
 

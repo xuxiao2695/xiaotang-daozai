@@ -196,6 +196,10 @@ pub fn fullscreen() -> Option<crate::display_layout::Bounds> {
         if matches!(cls.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
             return None;
         }
+        // 远程桌面全屏是在用另一台电脑办公，不是游戏或视频：岛照常显示。
+        if is_remote_desktop_window(hwnd) {
+            return None;
+        }
         let mut r = RECT::default();
         if GetWindowRect(hwnd, &mut r).is_err() {
             return None;
@@ -215,6 +219,26 @@ pub fn fullscreen() -> Option<crate::display_layout::Bounds> {
         covers.then_some(crate::display_layout::Bounds {left:info.rcMonitor.left,top:info.rcMonitor.top,right:info.rcMonitor.right,bottom:info.rcMonitor.bottom})
     }
 }
+/// 远程桌面客户端：Windows App / 远程桌面应用的 msrdc.exe，以及经典的 mstsc.exe。
+pub fn is_remote_desktop_exe(path:&str)->bool {
+    let name=path.rsplit(['\\','/']).next().unwrap_or(path).to_ascii_lowercase();
+    matches!(name.as_str(),"msrdc.exe"|"mstsc.exe")
+}
+
+/// 窗口是否属于远程桌面客户端。
+pub fn is_remote_desktop_window(hwnd:HWND)->bool {
+    unsafe {
+        let mut pid=0;
+        GetWindowThreadProcessId(hwnd,Some(&mut pid));
+        if pid==0 {return false;}
+        let Ok(process)=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,false,pid) else{return false};
+        let mut path=[0u16;1024];let mut length=path.len() as u32;
+        let result=QueryFullProcessImageNameW(process,PROCESS_NAME_WIN32,PWSTR(path.as_mut_ptr()),&mut length);
+        let _=CloseHandle(process);
+        result.is_ok() && is_remote_desktop_exe(&String::from_utf16_lossy(&path[..length as usize]))
+    }
+}
+
 pub(crate) fn is_browser_process(name:&str)->bool {
     ["chrome.exe","msedge.exe","firefox.exe","brave.exe","vivaldi.exe","opera.exe",
         "arc.exe","zen.exe","chromium.exe","librewolf.exe","floorp.exe","waterfox.exe",

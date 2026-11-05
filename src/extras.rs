@@ -18,9 +18,11 @@ pub(crate) struct Alert {
     pub duration: f64,
     pub bluetooth: Option<(crate::bt::DeviceKind, bool)>,
     pub meeting: Option<(crate::mail::Meeting, String)>,
+    /// 小工具联动推来的提示（语音、亮度、Claude 等）。
+    pub tool: Option<crate::integration_ui::ToolNotice>,
 }
 impl Alert {
-    pub(crate) fn is_hud(&self)->bool {self.source==AlertSource::Internal && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
+    pub(crate) fn is_hud(&self)->bool {self.tool.as_ref().is_some_and(|t|t.is_hud()) || self.tool.is_none() && self.source==AlertSource::Internal && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
 }
 fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
     if let Some(name)=body.strip_suffix(" · 已断开") {return (name,"已断开",None);}
@@ -62,6 +64,7 @@ pub(crate) fn notice_badge(c:&Card,x:f32,y:f32,a:&Alert){
 }
 fn notice_icon(c:&Card,x:f32,y:f32,a:&Alert) {
     if matches!(a.source,AlertSource::External(_)){crate::paint::bell(c,x,y,theme::WHITE,0.0);return;}
+    if let Some(tool)=&a.tool {crate::integration_ui::tool_icon(&c.scaled(x,y,0.8),x,y,tool,1.0,None);return;}
     match a.title.as_str() {
         "系统音量"=>{
             c.poly(&[(x-9.0,y-3.0),(x-5.0,y-3.0),(x,y-7.0),(x,y+7.0),(x-5.0,y+3.0),(x-9.0,y+3.0)],theme::WHITE);
@@ -182,6 +185,7 @@ impl App {
             duration: if transient { 2.5 } else { 8.0 },
             bluetooth: None,
             meeting: None,
+            tool: None,
         };
         self.enqueue_alert(a, system);
     }
@@ -189,7 +193,7 @@ impl App {
         self.enqueue_alert(Alert {
             source: AlertSource::Internal,
             title: "会议提醒".into(), body: format!("{} · {} · {}", meeting.title, meeting.at, source),
-            page, at: self.t, duration: 12.0, bluetooth: None, meeting: Some((meeting, source)),
+            page, at: self.t, duration: 12.0, bluetooth: None, meeting: Some((meeting, source)), tool: None,
         }, true);
     }
     pub(crate) fn bluetooth_alert(&mut self, device: &crate::bt::Device, connected: bool) {
@@ -205,10 +209,11 @@ impl App {
             page: 5, at: self.t, duration: 2.5,
             bluetooth: Some((device.kind, connected)),
             meeting: None,
+            tool: None,
         };
         self.enqueue_alert(a, false);
     }
-    fn enqueue_alert(&mut self, a: Alert, system: bool) {
+    pub(crate) fn enqueue_alert(&mut self, a: Alert, system: bool) {
         // 通知仅保存在本次运行的内存中。
         if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
         self.history.truncate(50);
@@ -244,7 +249,7 @@ impl App {
             if let Some(code)=crate::otp::extract("",&text,&[]) {text=crate::mail_privacy::mask(&text,&code.text);}
             text
         }else{"收到新通知 · 内容已隐藏".into()};
-        self.enqueue_alert(Alert{source:AlertSource::External(id),title,body,page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None},false);
+        self.enqueue_alert(Alert{source:AlertSource::External(id),title,body,page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None,tool:None},false);
     }
     pub(crate) fn tick_alerts(&mut self) {
         let allowed=|a:&Alert|match &a.source {
@@ -275,6 +280,7 @@ impl App {
     }
     pub(crate) fn draw_notice(&mut self, c:&Card,panel:Rect,a:&Alert,_cmds:&mut Vec<Cmd>){
         let nc=c.clipped(0.0,0.0,panel.width(),panel.height());
+        if let Some(tool)=&a.tool {self.draw_tool_notice(&nc,tool,a);return;}
         if matches!(a.source,AlertSource::External(_)) {
             crate::paint::bell(&nc,310.0,22.0,theme::GRAY,crate::paint::bell_swing(self.t-a.at));
             nc.circle(314.0,17.5,2.0,Color32::from_rgb(255,72,72));
@@ -963,7 +969,7 @@ impl App {
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","饮水记录与提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程"];
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","饮水记录与提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","自动亮度、语音输入、DeskHub、睿频的状态与快捷操作"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序，松开后自动应用到岛。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
@@ -1000,6 +1006,18 @@ impl App {
                                 ui.label(egui::RichText::new("至少保留一个页面。关闭仅隐藏页面，数据和提醒设置保留。").size(11.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             }
                         });
+                        settings_label(ui,"小工具联动");
+                        settings_card(ui,|ui|{
+                            setting_row(ui,"在岛上显示语音输入","听写时岛变成实时音量条，代替 VoiceInput 底部的浮窗",&mut self.settings.tool_voice);
+                            ui.separator();
+                            setting_row(ui,"亮度提示","AutoBrightness 调节亮度、久坐护眼提醒与离座黑屏倒计时",&mut self.settings.tool_brightness);
+                            ui.separator();
+                            setting_row(ui,"Claude 提醒","DeskHub 的 Claude 待批准、等待回复与完成，以及会议和专注状态",&mut self.settings.tool_claude);
+                            ui.separator();
+                            setting_row(ui,"睿频提示","AutoBoost 切换睿频与省电时提示，睿频期间常驻小闪电",&mut self.settings.tool_boost);
+                            ui.add_space(3.0);
+                            ui.label(egui::RichText::new(format!("联动端口：{}。关闭后各工具恢复自己的提示。",self.integration_status)).size(11.0).color(ui.visuals().weak_text_color()));
+                        });
                     }
                     0=>{
                         settings_label(ui,"设置页外观");
@@ -1028,6 +1046,16 @@ impl App {
                             ui.add_space(3.0);
                             ui.label(egui::RichText::new("仅影响设置页，岛的外观保持不变。").size(11.5)
                                 .color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(105))));
+                        });
+                        settings_label(ui,"界面大小");
+                        settings_card(ui,|ui|{
+                            ui.horizontal(|ui|{
+                                ui.add_sized([56.0,30.0],egui::Label::new("缩放"));
+                                for percent in [100,125,150,175,200] {
+                                    if ui.add_sized([56.0,30.0],egui::SelectableLabel::new(self.settings.ui_scale==percent,format!("{percent}%"))).clicked(){self.settings.ui_scale=percent;}
+                                }
+                            });
+                            ui.label(egui::RichText::new("同时放大岛和设置窗口；超出屏幕宽度时会自动限制在能完整显示的最大值。").size(11.0).color(ui.visuals().weak_text_color()));
                         });
                         settings_label(ui,"启动");
                         settings_card(ui,|ui|{

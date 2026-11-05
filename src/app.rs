@@ -38,7 +38,8 @@ pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
 pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，原岛仍按 WIN_W 定位。
 pub const WIN_H: f32 = 270.0;
-pub(crate) const PAGE_NAMES: [&str; 8] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程"];
+pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程", "小工具"];
+pub(crate) const TOOLS_PAGE: usize = 8;
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -139,6 +140,10 @@ pub enum Cmd {
     CalendarMonth(chrono::NaiveDate),
     /// 断开并删除日历配置（凭据由界面删除）。
     CalendarForget,
+    /// 不弹窗口地运行一个程序（如 `schtasks /Run /TN AutoBoost`）。
+    RunHidden(String, Vec<String>),
+    /// POST 到 DeskHub 本机控制口 127.0.0.1:47800（路径含查询串，如 `/focus?minutes=25`）。
+    DeskHub(String),
 }
 
 pub struct FrameOut {
@@ -306,6 +311,8 @@ pub struct App {
     h: Spring,
     pub(crate) open: bool,
     hover_since: Option<f64>,
+    /// 鼠标停在常驻小工具图标上：只出提示，不展开岛（上一帧的结果）。
+    pub(crate) indicator_hover: bool,
     leave_since: Option<f64>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
     pub hover_lock: bool,
@@ -317,7 +324,8 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 8],
+    dots: [Spring; 9],
+    pub(crate) tools: crate::tools::Cache,
     wheel_delta: f32,
     wheel_at: f64,
     wheel_page_at: f64,
@@ -421,6 +429,12 @@ pub struct App {
     pub(crate) updates: crate::updates::State,
     pub(crate) resident: bar::Motion,
     pub(crate) resident_power: (Option<u8>,bool),
+    /// 小工具联动：语音会话、亮度、DeskHub 状态；`integration_status` 显示在设置里。
+    pub(crate) integrations: crate::integrations::State,
+    pub integration_status: String,
+    pub(crate) voice_level: f32,
+    /// AutoBoost 的 state.json / 运行状态（每 2 秒读一次）。
+    pub(crate) autoboost: crate::autoboost::Watch,
 }
 
 impl App {
@@ -449,6 +463,7 @@ impl App {
             h: Spring::new(bh, CLOSE.0, CLOSE.1),
             open: false,
             hover_since: None,
+            indicator_hover: false,
             leave_since: None,
             hover_lock: false,
             reveal: 0.0,
@@ -458,6 +473,7 @@ impl App {
             page_t0: -10.0,
             slide: Spring::new(0.0, 260.0, 0.92),
             dots: std::array::from_fn(|i| Spring::new(if i == initial_page { 16.0 } else { 4.0 }, 380.0, 0.86)),
+            tools: Default::default(),
             wheel_delta: 0.0,
             wheel_at: -1.0,
             wheel_page_at: -1.0,
@@ -515,6 +531,7 @@ impl App {
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
             resident: Default::default(), resident_power:(None,false),
+            integrations: Default::default(), integration_status: "未启动".into(), voice_level: 0.0, autoboost: Default::default(),
         }
     }
 
@@ -936,7 +953,7 @@ impl App {
 
     pub fn show_page(&mut self,page:usize) {
         if !self.settings.visible_pages[page] {
-            self.settings_tab=[1,2,3,5,4,7,11,8][page];
+            self.settings_tab=[1,2,3,5,4,7,11,8,10].get(page).copied().unwrap_or(10);
             self.open_settings();
             return;
         }
@@ -1031,7 +1048,7 @@ impl App {
             && self.ly.key==format!("{}|{}|{:.0}",self.media.title,self.media.artist,self.media.duration)
             && self.ly.lyrics.as_ref().is_some_and(|lyrics|lyrics.synced && lyrics.lines.iter().any(|line|!line.text.trim().is_empty()))
     }
-    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
+    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||a.tool==Some(crate::integration_ui::ToolNotice::Voice)||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
 
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
@@ -1084,6 +1101,7 @@ impl App {
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
+        if let Some(tool)=&a.tool {return if matches!(tool,crate::integration_ui::ToolNotice::Boost(_)){(crate::integration_ui::boost_width(&a.body),38.0)}else{self.tool_notice_size(tool)};}
         let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
     }
@@ -1156,6 +1174,7 @@ impl App {
 
         self.tick(env, dt, elapsed);
         self.sync_device(env);
+        self.tick_integrations();
         self.tick_alerts();
         let hud_active=self.notice.clone();
         if hud_active.as_ref().map(|a|&a.title)!=self.hud_notice.as_ref().map(|a|&a.title)||hud_active.is_none(){self.notice_details=false;}
@@ -1168,7 +1187,7 @@ impl App {
         self.update_media(env,&ctx);
         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
-        let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled());
+        let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.shown_indicators().len());
         layout.reorder(&self.settings.resident_order);
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
         if self.pet_enabled() {
@@ -1270,7 +1289,7 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        let want = (inside && !self.hover_lock && !(self.indicator_hover && !self.open) && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         self.update_pet(env, cx);
 
@@ -1304,10 +1323,10 @@ impl App {
         self.cursor_local = env.cursor.map(|p| base.to_local(p));
 
         let banner=!self.compact_notices()&&self.notice.is_some()&&!self.open;
-        let restoring_lyrics=!self.open&&self.notice.is_none()&&self.island_lyrics_active()&&self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()||matches!(a.source,crate::extras::AlertSource::External(_)));
+        let restoring_lyrics=!self.open&&self.notice.is_none()&&self.island_lyrics_active()&&self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()||a.tool==Some(crate::integration_ui::ToolNotice::Voice)||matches!(a.source,crate::extras::AlertSource::External(_)));
         let fading_hud=!self.compact_notices()&&!self.open&&self.hud_notice.as_ref().is_some_and(|a|a.is_hud())&&(banner||self.hud_alpha>0.003);
         if fading_hud {
-            let from=self.resident.target.width;let to=HUD_W+self.pet_space();
+            let from=self.resident.target.width;let to=self.hud_notice.as_ref().map_or(HUD_W,|a|self.notice_size(a).0)+self.pet_space();
             let width_progress=if (to-from).abs()<1.0 {if banner{1.0}else{0.0}}else{((self.w.pos-from)/(to-from)).clamp(0.0,1.0)};
             let (opacity,header_opacity)=if banner {(self.hud_alpha*smoothstep(0.45,0.85,width_progress),1.0-smoothstep(0.05,0.40,width_progress))}
                 else {(self.hud_alpha*smoothstep(0.20,0.60,width_progress),1.0-smoothstep(0.05,0.25,width_progress))};
@@ -1404,11 +1423,13 @@ impl App {
             || self.t < self.notification_bell_until && self.t-self.notification_bell_at < 0.95
             || self.notice.as_ref().is_some_and(|a|matches!(a.source,crate::extras::AlertSource::External(_))&&self.t-a.at<0.95)
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
-            || !self.notice_width.settled(1.0);
+            || !self.notice_width.settled(1.0)
+            || self.integration_animating();
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || !self.open && !minimal_pill && self.notice.is_none() && self.indicators_animate();
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
@@ -1608,6 +1629,7 @@ impl App {
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
         }
+        if compact_alpha>0.004 {self.draw_tool_indicators(&base.faded(compact_alpha),local_cx,&layout);} else {self.indicator_hover=false;}
     }
 
     fn update_pet(&mut self, env: &Env, cx: f32) {
@@ -1641,7 +1663,7 @@ impl App {
         let (hover,press)=c.hover_t(&settings);
         c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
         paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8][self.page];self.open_settings();}
+        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8,10][self.page];self.open_settings();}
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
             c.text(37.0,25.0,if self.page==2{"饮水设置"}else{"专注设置"},size::TITLE,W::Bold,theme::WHITE,H::Left);
@@ -1682,6 +1704,7 @@ impl App {
             4 => ("待办", "清单", theme::GREEN),
             5 => ("邮箱", "", theme::CYAN),
             6 => ("AI", "额度", theme::SOFT_GREEN),
+            TOOLS_PAGE => ("小工具", "", theme::WHITE),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -1739,6 +1762,7 @@ impl App {
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
             CALENDAR_PAGE => self.page_calendar(c,env),
+            TOOLS_PAGE => self.page_tools(c),
             _ => self.page_settings(c),
         }
     }
