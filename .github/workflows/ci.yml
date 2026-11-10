@@ -17,6 +17,18 @@ jobs:
         run: cargo +stable test --locked --manifest-path vendor/ureq/Cargo.toml --lib --no-default-features --features tls,gzip --target x86_64-pc-windows-msvc unit::tests
       - name: 测试
         run: cargo +stable test --locked --all-targets --features record --target x86_64-pc-windows-msvc -- --test-threads=1
+      - name: 构建并检查发布运行库
+        shell: pwsh
+        run: |
+          cargo +stable build --locked --release --bin daozai --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw '发布构建失败' }
+          ./scripts/check-runtime.ps1 -Executable ./target/x86_64-pc-windows-msvc/release/daozai.exe
+      - name: 上传 daozai.exe（本机没有编译环境时直接下载安装）
+        uses: actions/upload-artifact@v4
+        with:
+          name: daozai-exe
+          path: target/x86_64-pc-windows-msvc/release/daozai.exe
+          retention-days: 7
       - name: 检查安装脚本语法
         shell: pwsh
         run: |

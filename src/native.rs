@@ -30,6 +30,8 @@ const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 static HIT: OnceLock<Mutex<Vec<(i32, i32, i32, i32)>>> = OnceLock::new();
 /// 前台窗口切到别的进程时置位，由主线程消费。
 static FG_CHANGED: AtomicBool = AtomicBool::new(false);
+// 远程桌面拿到前台时它的全屏窗口会盖住岛，下一帧把岛重新抬到最上层。
+static RAISE_OVER_FG: AtomicBool = AtomicBool::new(false);
 
 // `WS_EX_NOREDIRECTIONBITMAP` 只能在 CreateWindowEx 时设置（运行时 SetWindowLongPtrW
 // 会回 ERROR_INVALID_PARAMETER），本项目用 GL 合成窗口，加上这一位后画面上什么都
@@ -222,6 +224,14 @@ unsafe extern "system" fn subclass(
     // 保留框架的焦点通知；lParam=-1 禁止系统在激活时重画透明窗口的顶边。
     if msg==WM_NCACTIVATE {return DefSubclassProc(hwnd,msg,wp,LPARAM(-1));}
     if msg==WM_NCPAINT {return LRESULT(0);}
+    // 远程桌面全屏时键盘都被它抓着：点岛就把前台拿回本机（激活岛自己），
+    // 之后 Alt+Tab 切的是本机的程序，不用先把远程桌面最小化。
+    if msg == WM_MOUSEACTIVATE {
+        let fg = GetForegroundWindow();
+        if !fg.0.is_null() && fg != hwnd && crate::system::is_remote_desktop_window(fg) {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
     if msg == WM_MOUSEACTIVATE
         && GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE.0 as isize != 0
     {
@@ -261,6 +271,9 @@ unsafe extern "system" fn on_foreground(
     // 自己（含托盘窗口）拿到前台不算「切走」
     if pid != 0 && pid != GetCurrentProcessId() {
         FG_CHANGED.store(true, Ordering::Relaxed);
+        if crate::system::is_remote_desktop_window(hwnd) {
+            RAISE_OVER_FG.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -511,7 +524,8 @@ impl Window {
             }
             None => {}
         }
-        unsafe { apply_style(self.hwnd, editing, expanded && !self.expanded) };
+        let raise = (expanded && !self.expanded) || RAISE_OVER_FG.swap(false, Ordering::Relaxed);
+        unsafe { apply_style(self.hwnd, editing, raise) };
         self.expanded = expanded;
     }
 }

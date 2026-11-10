@@ -600,6 +600,8 @@ pub struct App {
     pub(crate) h: Spring,
     pub(crate) open: bool,
     hover_since: Option<f64>,
+    /// 鼠标停在常驻小工具图标上：只出提示，不展开岛（上一帧的结果）。
+    pub(crate) indicator_hover: bool,
     leave_since: Option<f64>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
     pub hover_lock: bool,
@@ -771,6 +773,7 @@ impl App {
             h: Spring::new(bh, CLOSE.0, CLOSE.1),
             open: false,
             hover_since: None,
+            indicator_hover: false,
             leave_since: None,
             hover_lock: false,
             reveal: 0.0,
@@ -1668,7 +1671,9 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        // 上一帧停在常驻图标上；每帧取走，这一帧没画图标（比如在显示歌词）就自然清零
+        let on_indicator = std::mem::take(&mut self.indicator_hover);
+        let want = (inside && !self.hover_lock && !(on_indicator && !self.open) && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         self.update_pet(env, cx);
 
@@ -2406,7 +2411,7 @@ impl App {
         let (hover,press)=c.hover_t(&settings);
         c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
         paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8][self.page];self.open_settings();}
+        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8,10][self.page];self.open_settings();}
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
             c.text(37.0,25.0,if self.page==2{"饮水设置"}else{"专注设置"},size::TITLE,W::Bold,theme::WHITE,H::Left);

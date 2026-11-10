@@ -569,6 +569,7 @@ impl H {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("daozai-test-{}-{}", std::process::id(), rand_id()));
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
+        std::env::set_var("DAOZAI_TEST_HOME", dir.join("home"));
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
         Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
@@ -5130,7 +5131,8 @@ fn tool_notices_follow_claude_and_brightness_events(){
     assert_eq!((a.title.as_str(),a.body.as_str(),a.duration),("xiaotang-daozai","Claude 要你批准",10.0));
     assert!(matches!(h.app.resident_indicators().as_slice(),[crate::integrations::Indicator::Claude{count:1,approval:true,..}]));
     h.app.integration_event(claude("working"));h.frame(vec![]);
-    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty(),"开始工作后撤下等待提醒");
+    assert!(h.app.notice.is_none(),"开始工作后撤下等待提醒");
+    assert!(matches!(h.app.resident_indicators().as_slice(),[crate::integrations::Indicator::ClaudeWorking{count:1,..}]),"干活时常驻灰白星芒");
     h.app.integration_event(claude("done"));h.frame(vec![]);
     assert_eq!(notice_tool(&h),Some(ToolNotice::ClaudeDone("s1".into())));
     for _ in 0..30 {h.frame(vec![]);}h.click_text("知道了");assert!(h.app.notice.is_none());
@@ -5251,13 +5253,15 @@ fn boost(mode:crate::autoboost::Mode,reason:&str)->Option<crate::autoboost::Boos
 fn autoboost_switches_show_a_hud_and_a_resident_bolt(){
     use crate::{autoboost::Mode,integration_ui::ToolNotice,integrations::Indicator,bar_layout::TOOLS};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    for _ in 0..20 {h.frame(vec![]);}
+    assert!(h.app.resident_indicators().is_empty() && h.app.resident.target.x[TOOLS].is_none(),"AutoBoost 没在跑、也没有别的指示时不占位");
     h.app.autoboost.set(None,boost(Mode::Boost,"刚启动"),true);h.frame(vec![]);
     assert!(h.app.notice.is_none(),"第一次读到状态不提示");
     h.app.autoboost.set(None,boost(Mode::Eco,"空闲 30 秒"),true);h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|(a.body.as_str(),a.is_hud())),Some(("已回到省电",true)));
     for _ in 0..200 {h.frame(vec![]);}
-    assert!(h.app.notice.is_none() && h.app.resident_indicators().is_empty());
-    assert!(h.app.resident.target.x[TOOLS].is_none(),"没有指示时不占位");
+    assert!(h.app.notice.is_none());
+    assert!(matches!(h.app.resident_indicators().as_slice(),[Indicator::BoostEco]),"省电时常驻暗色闪电");
     h.app.autoboost.set(None,boost(Mode::Boost,"cl.exe 占用 3.2 核"),true);for _ in 0..20 {h.frame(vec![]);}
     let a=h.app.notice.clone().unwrap();
     assert_eq!((a.tool,a.body.as_str()),(Some(ToolNotice::Boost(true)),"已开启睿频 · cl.exe 占用 3.2 核"));
@@ -6657,4 +6661,25 @@ fn legacy_ui_scale_moves_into_island_size_once(){
     let saved=std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains("island_size=175")&&!saved.contains("ui_scale"),"保存后只留下岛体大小");
     assert_eq!(crate::model::island_size_value(260),200);
+}
+
+#[test]
+fn hovering_a_resident_icon_never_blocks_the_island_later(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings.island_lyrics=true;h.frame(vec![]);
+    h.app.integration_event(tool_event(r#"{"source":"deskhub","kind":"claude","session":"s1","title":"t","state":"working"}"#));
+    for _ in 0..120 {h.frame(vec![]);}
+    // 停在常驻图标上：只出提示不展开
+    let on_icon=WIN_W/2.0+h.app.resident.target.x[crate::bar_layout::TOOLS].expect("常驻图标有位置");
+    h.hover(Pos2::new(on_icon,15.0),0.2);
+    assert!(h.app.indicator_hover,"鼠标在常驻图标上");
+    h.hover(Pos2::new(on_icon,15.0),1.2);
+    assert!(!h.app.open,"停在常驻图标上不展开");
+    // 鼠标还在图标上时开始放歌、岛上显示歌词：图标不再画
+    h.media=crate::smtc::NowPlaying{source:"KuGou.exe".into(),title:"Track".into(),artist:"Artist".into(),duration:120.0,playing:true,..Default::default()};
+    h.frame(vec![]);
+    h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:00]开头\n[00:30]中段"));
+    for _ in 0..60 {h.frame(vec![]);}
+    h.hover(Pos2::new(5.0,150.0),1.5);
+    h.hover(Pos2::new(WIN_W/2.0,15.0),1.2);
+    assert!(h.app.open,"放音乐时悬停岛中间照常展开");
 }

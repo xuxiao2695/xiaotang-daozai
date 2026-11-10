@@ -226,6 +226,8 @@ pub(crate) fn mutex_exists(_name: &str) -> bool {
 }
 
 pub(crate) fn user_home() -> Option<PathBuf> {
+    // 测试不读本机真实装着的小工具（比如开发机上正在跑的 AutoBoost）
+    #[cfg(test)] if let Some(home) = std::env::var_os("DAOZAI_TEST_HOME") { return Some(PathBuf::from(home)); }
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
 }
 
