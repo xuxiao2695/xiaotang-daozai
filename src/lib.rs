@@ -8,6 +8,7 @@
 pub mod display_layout;
 mod mail_privacy;
 pub mod poll_clock;
+pub mod resources;
 pub mod anim;
 pub mod app;
 pub mod bt;
@@ -16,11 +17,16 @@ mod calendar_ui;
 mod local_calendar;
 mod calendar_editor;
 pub mod glass;
+pub mod skin_paint;
 pub mod icons;
 pub mod input;
 pub mod lyrics;
 pub mod mail;
 mod mail_reader;
+pub mod mail_manage;
+mod mail_manage_ui;
+pub mod clipboard;
+pub mod side_dock;
 mod task_picker;
 pub mod model;
 pub mod otp;
@@ -33,21 +39,31 @@ mod integration_ui;
 mod pages;
 mod extras;
 mod pet;
+mod pet_expressions;
 mod bar_layout;
 mod resident_settings;
 mod avoidance;
 mod focus_bar;
 #[cfg(windows)]
+pub mod backdrop;
+#[cfg(windows)]
+pub mod composition;
+#[cfg(windows)]
 pub mod system;
 pub mod paint;
 pub mod shape;
+mod fluid;
 pub mod smtc;
 pub mod theme;
 pub mod settings_theme;
 mod updates;
+#[cfg(windows)]
+pub use updates::record_install_size;
 
 #[cfg(windows)]
 pub mod native;
+#[cfg(windows)]
+pub mod wechat;
 #[cfg(windows)]
 pub mod tray;
 
