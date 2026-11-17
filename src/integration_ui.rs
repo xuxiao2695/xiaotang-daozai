@@ -122,7 +122,7 @@ impl App {
     }
 
     fn tool_alert(&mut self, tool: ToolNotice, title: impl Into<String>, body: impl Into<String>, duration: f64) {
-        let a = Alert { source: AlertSource::Internal, title: title.into(), body: body.into(), page: usize::MAX, at: self.t, duration, bluetooth: None, meeting: None, tool: Some(tool) };
+        let a = Alert { source: AlertSource::Internal, title: title.into(), body: body.into(), page: usize::MAX, at: self.t, duration, bluetooth: None, meeting: None, tool: Some(tool), unread: None };
         self.enqueue_alert(a, false);
     }
     fn drop_tool(&mut self, matches: impl Fn(&ToolNotice) -> bool) {
@@ -179,7 +179,7 @@ impl App {
         let body = if session.text.is_empty() { session.mic.clone() } else { session.text.clone() };
         match &mut self.notice {
             Some(a) => a.body = body,
-            None => self.notice = Some(Alert { source: AlertSource::Internal, title: VOICE_TITLE.into(), body, page: usize::MAX, at: session.started, duration: f64::INFINITY, bluetooth: None, meeting: None, tool: Some(ToolNotice::Voice) }),
+            None => self.notice = Some(Alert { source: AlertSource::Internal, title: VOICE_TITLE.into(), body, page: usize::MAX, at: session.started, duration: f64::INFINITY, bluetooth: None, meeting: None, tool: Some(ToolNotice::Voice), unread: None }),
         }
     }
 
